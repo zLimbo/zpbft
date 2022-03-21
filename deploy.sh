@@ -25,7 +25,8 @@ function deployClient() {
     # sshpass -p z scp -r ${src}/config z@${client}:${dst}/config
     # sshpass -p z scp -r certs z@${client}:~/zpbft/certs
 
-    if [ "ssh z@{client} test -e ${dst}" ]; then
+    if [ ! "ssh z@{client} test -e ${dst}" ]; then
+        echo ">>> sshpass -p z ssh z@{client} mkdir -p ${dst}"
         sshpass -p z ssh z@{client} mkdir -p ${dst}
     fi
 
@@ -44,13 +45,14 @@ function deployServer() {
         printf "deploy server in %-16s ..." ${srv}
         start=$(date +%s)
 
-        if [ "ssh z@{client} -f ${dst}" ]; then
-            sshpass -p z ssh z@{client} mkdir -p ${dst}
+        if [ ! "ssh z@{srv} -f ${dst}" ]; then
+            echo ">>> sshpass -p z ssh z@{srv} mkdir -p ${dst}"
+            sshpass -p z ssh z@{srv} mkdir -p ${dst}
         fi
 
         # echo ${srv} >config/local_ip.txt
         # sshpass -p z scp -r ${src}/config z@${srv}:${dst}/config
-        # sshpass -p z scp -r z@${client}:${dst}/certs z@${srv}:${dst}/certs
+        # sshpass -p z scp -r z@${srv}:${dst}/certs z@${srv}:${dst}/certs
 
         sshpass -p z scp ${src}/bin/zpbft z@${srv}:${dst}/zpbft
         sshpass -p z scp -r ${src}/config/config.json z@${srv}:${dst}/config/config.json
