@@ -12,7 +12,7 @@ servers=(
     "219.228.148.231"
 )
 
-src="."
+src='.'
 dst="~/zpbft"
 
 function deployClient() {
@@ -44,7 +44,7 @@ function deployServer() {
         # sshpass -p z scp -r ${src}/config z@${srv}:${dst}/config
         # sshpass -p z scp -r z@${client}:${dst}/certs z@${srv}:${dst}/certs
 
-        sshpass -p z scp ${src}/zpbft z@${srv}:${dst}/zpbft
+        sshpass -p z scp ${src}/bin/zpbft z@${srv}:${dst}/zpbft
         sshpass -p z scp -r ${src}/config/config.json z@${srv}:${dst}/config/config.json
 
         end=$(date +%s)
