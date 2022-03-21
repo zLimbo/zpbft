@@ -13,7 +13,7 @@ servers=(
 )
 
 src='.'
-dst="~/zpbft"
+dst="~/zpbft2"
 
 function deployClient() {
     printf "\n[deployClient]\n"
@@ -24,6 +24,10 @@ function deployClient() {
     # echo ${client} >config/local_ip.txt
     # sshpass -p z scp -r ${src}/config z@${client}:${dst}/config
     # sshpass -p z scp -r certs z@${client}:~/zpbft/certs
+
+    if [ "ssh z@{client} -f ${dst}" ]; then
+        sshpass -p z ssh z@{client} mkdir -p ${dst}
+    fi
 
     sshpass -p z scp ${src}/bin/zpbft z@${client}:${dst}/zpbft
     sshpass -p z scp -r ${src}/config/config.json z@${client}:${dst}/config/config.json
@@ -39,6 +43,10 @@ function deployServer() {
     for srv in ${servers[@]}; do
         printf "deploy server in %-16s ..." ${srv}
         start=$(date +%s)
+
+        if [ "ssh z@{client} -f ${dst}" ]; then
+            sshpass -p z ssh z@{client} mkdir -p ${dst}
+        fi
 
         # echo ${srv} >config/local_ip.txt
         # sshpass -p z scp -r ${src}/config z@${srv}:${dst}/config
