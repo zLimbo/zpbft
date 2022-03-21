@@ -25,6 +25,7 @@ cmd="cd ${dst}; ./zpbft > ${time}.log 2>&1 &"
 
 printf "\n[kill zpbft]\n"
 for srv in ${servers[@]}; do
+    printf "server %s kill\n" ${srv}
     sshpass -p z ssh z@${srv} "cd ${dst}; ./kill.sh"
 done
 sshpass -p z ssh z@${client} "cd ${dst}; ./kill.sh"

@@ -125,6 +125,19 @@ func (lc *LogCert) commitBallot() int {
 	return len(lc.commits)
 }
 
+func (lc *LogCert) clear() {
+	lc.mu.Lock()
+	defer lc.mu.Unlock()
+
+	lc.req.Sign = nil
+	lc.req.Req.Operator = nil
+	lc.digest = nil
+	lc.prepares = nil
+	lc.commits = nil
+	lc.prepareQ = nil
+	lc.commitQ = nil
+}
+
 type RequestMsg struct {
 	Operator  []byte
 	Timestamp int64

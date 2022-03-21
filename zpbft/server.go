@@ -44,9 +44,8 @@ func (s *Server) getCertOrNew(seq int64) *LogCert {
 }
 
 func (s *Server) cleanCert(seq int64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.seq2cert, seq)
+	cert := s.getCertOrNew(seq)
+	cert.clear()
 }
 
 func (s *Server) RequestRpc(args *RequestArgs, reply *RequestReply) error {
