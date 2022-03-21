@@ -81,7 +81,7 @@ func (c *Client) ReplyRpc(args *ReplyArgs, reply *bool) error {
 	avgLatency := float64(c.sumLatency) / float64(c.applyCount)
 
 	c.result = fmt.Sprintf("apply: %d seq: %d take: %.2f tps: %.0f curLa: %d avgLa: %.2f",
-		c.applyCount+1, msg.Seq, take, tps, latency.Milliseconds(), avgLatency)
+		c.applyCount, msg.Seq, take, tps, latency.Milliseconds(), avgLatency)
 	Info(c.result)
 
 	<-c.coch
