@@ -1,6 +1,6 @@
 #!/bin/bash
 
-client="219.228.148.172"
+client="219.228.148.154"
 servers=(
     "219.228.148.45"
     "219.228.148.80"
@@ -12,18 +12,21 @@ servers=(
     "219.228.148.231"
 )
 
+src="."
+dst="~/zpbft"
+
 function deployClient() {
     printf "\n[deployClient]\n"
 
     printf "deploy client in %-16s ..." ${client}
     start=$(date +%s)
 
-    echo ${client} >config/local_ip.txt
-    sshpass -p z scp -r config z@${client}:~/zpbft/config
-    sshpass -p z scp bin/zpbft z@${client}:~/zpbft/zpbft
+    # echo ${client} >config/local_ip.txt
+    # sshpass -p z scp -r ${src}/config z@${client}:${dst}/config
     # sshpass -p z scp -r certs z@${client}:~/zpbft/certs
 
-    sshpass -p z scp -r config/config.json z@${client}:~/zpbft/config/config.json
+    sshpass -p z scp ${src}/bin/zpbft z@${client}:${dst}/zpbft
+    sshpass -p z scp -r ${src}/config/config.json z@${client}:${dst}/config/config.json
 
     end=$(date +%s)
     take=$((end - start))
@@ -37,12 +40,12 @@ function deployServer() {
         printf "deploy server in %-16s ..." ${srv}
         start=$(date +%s)
 
-        echo ${srv} >config/local_ip.txt
-        # sshpass -p z scp -r config z@${srv}:~/zpbft/config
-        sshpass -p z scp bin/zpbft z@${srv}:~/zpbft/zpbft
-        # sshpass -p z scp -r certs z@${srv}:~/zpbft/certs
+        # echo ${srv} >config/local_ip.txt
+        # sshpass -p z scp -r ${src}/config z@${srv}:${dst}/config
+        # sshpass -p z scp -r z@${client}:${dst}/certs z@${srv}:${dst}/certs
 
-        sshpass -p z scp -r config/config.json z@${srv}:~/zpbft/config/config.json
+        sshpass -p z scp ${src}/zpbft z@${srv}:${dst}/zpbft
+        sshpass -p z scp -r ${src}/config/config.json z@${srv}:${dst}/config/config.json
 
         end=$(date +%s)
         take=$((end - start))
@@ -64,7 +67,7 @@ start=$(date +%s)
 
 end=$(date +%s)
 take=$((end - start))
-printf "\rcompile zpbft, rpbft ok, take %ds\n" ${take}
+printf "\rcompile zpbft ok, take %ds\n" ${take}
 
 if [ $1 == "a" ]; then
     deployClient
