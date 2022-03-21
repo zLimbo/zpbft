@@ -13,7 +13,7 @@ servers=(
 )
 
 src='.'
-dst="~/zpbft2"
+dst="/home/z/zpbft2"
 
 function deployClient() {
     printf "\n[deployClient]\n"
