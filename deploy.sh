@@ -13,7 +13,7 @@ servers=(
 )
 
 src='.'
-dst="/home/z/zpbft2"
+dst="/home/z/2zp"
 
 function deployClient() {
     printf "\n[deployClient]\n"
@@ -21,19 +21,16 @@ function deployClient() {
     printf "deploy client in %-16s ..." ${client}
     start=$(date +%s)
 
-    # echo ${client} >config/local_ip.txt
-    # sshpass -p z scp -r ${src}/config z@${client}:${dst}/config
-    # sshpass -p z scp -r certs z@${client}:~/zpbft/certs
-
-    if [ "ssh z@{client} test -e ${dst}" ]; then
-        echo "exist"
-    else
-        echo ">>> sshpass -p z ssh z@{client} mkdir -p ${dst}"
-        sshpass -p z ssh z@{client} mkdir -p ${dst}
+    if ! ssh z@${client} test -e ${dst}/config; then
+        echo "mkdir ${dst}"
+        sshpass -p z ssh z@${client} mkdir -p ${dst}/config
     fi
 
+    # sshpass -p z scp -r certs z@${client}:~/zpbft/certs
     sshpass -p z scp ${src}/bin/zpbft z@${client}:${dst}/zpbft
     sshpass -p z scp -r ${src}/config/config.json z@${client}:${dst}/config/config.json
+    echo ${client} >config/local_ip.txt
+    sshpass -p z scp -r ${src}/config/local_ip.txt z@${client}:${dst}/config/local_ip.txt
 
     end=$(date +%s)
     take=$((end - start))
@@ -47,17 +44,16 @@ function deployServer() {
         printf "deploy server in %-16s ..." ${srv}
         start=$(date +%s)
 
-        if [ ! "ssh z@{srv} -f ${dst}" ]; then
-            echo ">>> sshpass -p z ssh z@{srv} mkdir -p ${dst}"
-            sshpass -p z ssh z@{srv} mkdir -p ${dst}
+        if ! ssh z@${srv} test -e ${dst}/config; then
+            echo "mkdir ${dst}"
+            sshpass -p z ssh z@${srv} mkdir -p ${dst}/config
         fi
 
-        # echo ${srv} >config/local_ip.txt
-        # sshpass -p z scp -r ${src}/config z@${srv}:${dst}/config
         # sshpass -p z scp -r z@${srv}:${dst}/certs z@${srv}:${dst}/certs
-
         sshpass -p z scp ${src}/bin/zpbft z@${srv}:${dst}/zpbft
         sshpass -p z scp -r ${src}/config/config.json z@${srv}:${dst}/config/config.json
+        echo ${srv} >config/local_ip.txt
+        sshpass -p z scp -r ${src}/config/local_ip.txt z@${srv}:${dst}/config/local_ip.txt
 
         end=$(date +%s)
         take=$((end - start))
