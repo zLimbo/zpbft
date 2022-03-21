@@ -25,7 +25,7 @@ function deployClient() {
     # sshpass -p z scp -r ${src}/config z@${client}:${dst}/config
     # sshpass -p z scp -r certs z@${client}:~/zpbft/certs
 
-    if [ "ssh z@{client} -f ${dst}" ]; then
+    if [ "ssh z@{client} test -e ${dst}" ]; then
         sshpass -p z ssh z@{client} mkdir -p ${dst}
     fi
 
