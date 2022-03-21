@@ -22,7 +22,6 @@ function deployClient() {
     start=$(date +%s)
 
     if ! ssh z@${client} test -e ${dst}/config; then
-        echo "mkdir ${dst}"
         sshpass -p z ssh z@${client} mkdir -p ${dst}/config
     fi
 
