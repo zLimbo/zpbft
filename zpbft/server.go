@@ -15,7 +15,7 @@ type Server struct {
 	logs      []*Log
 	seq2cert  map[int64]*LogCert
 	id2srvCli map[int64]*rpc.Client
-	cliCli    *rpc.Client
+	id2cliCli map[int64]*rpc.Client
 	mu        sync.Mutex
 	seqInc    int64
 	view      int64
@@ -43,20 +43,41 @@ func (s *Server) getCertOrNew(seq int64) *LogCert {
 	return cert
 }
 
+func (s *Server) cleanCert(seq int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.seq2cert, seq)
+}
+
 func (s *Server) RequestRpc(args *RequestArgs, reply *RequestReply) error {
 	// 放入请求队列直接返回，后续异步通知客户端
 
 	Debug("RequestRpc, from: %d", args.Req.ClientId)
 
-	// 验证RequestMsg
-	node := GetNode(args.Req.ClientId)
-	digest := Sha256Digest(args.Req)
-	ok := RsaVerifyWithSha256(digest, args.Sign, node.pubKey)
-	if !ok {
-		Warn("RequestMsg verify error, from: %d", args.Req.ClientId)
-		reply.Ok = false
-		return nil
+	// server构造 req 发送
+	req := &RequestMsg{
+		Operator:  make([]byte, KConfig.BatchTxNum*KConfig.TxSize),
+		Timestamp: time.Now().UnixNano(),
+		ClientId:  args.Req.ClientId,
 	}
+	node := GetNode(args.Req.ClientId)
+	digest := Sha256Digest(req)
+	sign := RsaSignWithSha256(digest, node.priKey)
+
+	args = &RequestArgs{
+		Req:  req,
+		Sign: sign,
+	}
+
+	// 验证RequestMsg
+	// node := GetNode(args.Req.ClientId)
+	// digest := Sha256Digest(args.Req)
+	// ok := RsaVerifyWithSha256(digest, args.Sign, node.pubKey)
+	// if !ok {
+	// 	Warn("RequestMsg verify error, from: %d", args.Req.ClientId)
+	// 	reply.Ok = false
+	// 	return nil
+	// }
 
 	// leader 分配seq
 	seq := s.assignSeq()
@@ -228,7 +249,7 @@ func (s *Server) CommitRpc(args *CommitArgs, reply *bool) error {
 }
 
 func (s *Server) verifyBallot(cert *LogCert) {
-	req, _, _ := cert.get()
+	req, reqDigest, view := cert.get()
 
 	// cmd 为空则不进行后续阶段
 	if req == nil {
@@ -237,7 +258,6 @@ func (s *Server) verifyBallot(cert *LogCert) {
 	}
 	// Debug("march, seq: %d, prepare: %d, commit: %d, stage: %d",
 	// 	cert.seq, cert.prepareBallot(), cert.commitBallot(), cert.getStage())
-	_, reqDigest, view := cert.get()
 
 	switch cert.getStage() {
 	case PrepareStage:
@@ -313,7 +333,7 @@ func (s *Server) Reply(seq int64) {
 		Timestamp: time.Now().UnixNano(),
 		ClientId:  req.Req.ClientId,
 		NodeId:    s.node.id,
-		Result:    req.Req.Operator,
+		// Result:    req.Req.Operator,
 	}
 	digest := Sha256Digest(msg)
 	sign := RsaSignWithSha256(digest, s.node.priKey)
@@ -322,13 +342,54 @@ func (s *Server) Reply(seq int64) {
 		Sign: sign,
 	}
 	var reply bool
-	err := s.cliCli.Call("Client.ReplyRpc", replyArgs, &reply)
+	cliCli := s.getCliCli(req.Req.ClientId)
+	if cliCli == nil {
+		Warn("can't connect client %d", req.Req.ClientId)
+		return
+	}
+	err := cliCli.Call("Client.ReplyRpc", replyArgs, &reply)
 	if err != nil {
-		Error("Client.ReplyRpc error: %v", err)
+		Warn("Client.ReplyRpc error: %v", err)
+		s.closeCliCli(req.Req.ClientId)
+	}
+	s.cleanCert(seq)
+}
+
+func (s *Server) getCliCli(clientId int64) *rpc.Client {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cliCli, ok := s.id2cliCli[clientId]
+	if !ok || cliCli == nil {
+		node := GetNode(clientId)
+		var err error
+		cliCli, err = rpc.DialHTTP("tcp", node.addr)
+		if err != nil {
+			Warn("connect client %d error: %v", node.addr, err)
+			return nil
+		}
+		s.id2cliCli[clientId] = cliCli
+	}
+	return cliCli
+}
+
+func (s *Server) closeCliCli(clientId int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	Info("close connect with client %d", clientId)
+	cliCli, ok := s.id2cliCli[clientId]
+	if ok && cliCli != nil {
+		cliCli = nil
+		delete(s.id2cliCli, clientId)
 	}
 }
 
-func (s *Server) connect(coch chan<- interface{}) {
+func (s *Server) CloseCliCliRPC(args *CloseCliCliArgs, reply *bool) error {
+	s.closeCliCli(args.ClientId)
+	*reply = true
+	return nil
+}
+
+func (s *Server) connect() {
 	ok := false
 	for !ok {
 		time.Sleep(time.Second) // 每隔一秒进行连接
@@ -349,29 +410,21 @@ func (s *Server) connect(coch chan<- interface{}) {
 
 			}
 		}
-		if s.cliCli == nil {
-			cli, err := rpc.DialHTTP("tcp", KConfig.ClientNode.addr)
-			if err != nil {
-				Warn("connect %d error: %v", KConfig.ClientNode.addr, err)
-				ok = false
-			} else {
-				s.cliCli = cli
-			}
-		}
 	}
-	Info("\n== connect success ==")
-	coch <- 1
+	Info("== connect success ==")
 }
 
-func (s *Server) workLoop(coch <-chan interface{}) {
-
-	// 阻塞直到连接成功
-	<-coch
-	Info("start work loop")
+func (s *Server) workLoop() {
+	Info("== start work loop ==")
 
 	for seq := range s.seqCh {
 		s.PrePrepare(seq)
 	}
+}
+
+func (s *Server) Start() {
+	s.connect()
+	s.workLoop()
 }
 
 func RunServer(id int64) {
@@ -381,15 +434,14 @@ func RunServer(id int64) {
 		logs:      make([]*Log, 0),
 		seq2cert:  make(map[int64]*LogCert),
 		id2srvCli: make(map[int64]*rpc.Client),
+		id2cliCli: make(map[int64]*rpc.Client),
 	}
 	// 每个分配序号后缀为节点id(8位)
 	server.seqInc = server.node.id
 	// 当前暂无view-change, view暂且设置为server id
 	server.view = server.node.id
 
-	coch := make(chan interface{})
-	go server.connect(coch)
-	go server.workLoop(coch)
+	go server.Start()
 
 	rpc.Register(server)
 	rpc.HandleHTTP()

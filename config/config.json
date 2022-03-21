@@ -20,8 +20,8 @@
     "LogStdout": true,
     "LogLevel": 0,
     "GoMaxProcs": 4,
-    "BatchTxNum": 200,
-    "TxSize": 100,
+    "BatchTxNum": 26214,
+    "TxSize": 400,
     "GossipNum": 3,
     "EnableGossip": false,
     "ExecNum": 0

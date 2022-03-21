@@ -7,7 +7,7 @@ import (
 )
 
 type Log struct {
-	op []byte
+	Op []byte
 }
 
 type Stage = int32
@@ -190,4 +190,8 @@ type CommitArgs struct {
 type ReplyArgs struct {
 	Msg  *ReplyMsg
 	Sign []byte
+}
+
+type CloseCliCliArgs struct {
+	ClientId int64
 }
