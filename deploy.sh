@@ -25,7 +25,9 @@ function deployClient() {
     # sshpass -p z scp -r ${src}/config z@${client}:${dst}/config
     # sshpass -p z scp -r certs z@${client}:~/zpbft/certs
 
-    if [ ! "ssh z@{client} test -e ${dst}" ]; then
+    if [ "ssh z@{client} test -e ${dst}" ]; then
+        echo "exist"
+    else
         echo ">>> sshpass -p z ssh z@{client} mkdir -p ${dst}"
         sshpass -p z ssh z@{client} mkdir -p ${dst}
     fi
