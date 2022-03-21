@@ -1,6 +1,6 @@
 #!/bin/bash
 
-client="219.228.148.172"
+client="219.228.148.154"
 servers=(
     "219.228.148.45"
     "219.228.148.80"
@@ -21,7 +21,7 @@ function deployClient() {
     echo ${client} >config/local_ip.txt
     sshpass -p z scp -r config z@${client}:~/zpbft/config
     sshpass -p z scp bin/zpbft z@${client}:~/zpbft/zpbft
-    # sshpass -p z scp -r certs z@${client}:~/zpbft/certs
+    sshpass -p z scp -r certs z@${client}:~/zpbft/certs
 
     sshpass -p z scp -r config/config.json z@${client}:~/zpbft/config/config.json
 
@@ -38,9 +38,9 @@ function deployServer() {
         start=$(date +%s)
 
         echo ${srv} >config/local_ip.txt
-        # sshpass -p z scp -r config z@${srv}:~/zpbft/config
+        sshpass -p z scp -r config z@${srv}:~/zpbft/config
         sshpass -p z scp bin/zpbft z@${srv}:~/zpbft/zpbft
-        # sshpass -p z scp -r certs z@${srv}:~/zpbft/certs
+        sshpass -p z scp -r certs z@${srv}:~/zpbft/certs
 
         sshpass -p z scp -r config/config.json z@${srv}:~/zpbft/config/config.json
 
@@ -64,7 +64,7 @@ start=$(date +%s)
 
 end=$(date +%s)
 take=$((end - start))
-printf "\rcompile zpbft, rpbft ok, take %ds\n" ${take}
+printf "\rcompile zpbft ok, take %ds\n" ${take}
 
 if [ $1 == "a" ]; then
     deployClient
