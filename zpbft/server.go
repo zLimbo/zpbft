@@ -288,6 +288,8 @@ func (s *Server) verifyBallot(cert *LogCert) {
 		if cert.prepareBallot() >= 2*KConfig.FalultNum {
 			cert.setStage(CommitStage)
 			go s.Commit(cert.seq)
+		} else {
+			break
 		}
 		fallthrough // 进入后续判断
 	case CommitStage:
