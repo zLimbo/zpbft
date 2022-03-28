@@ -49,7 +49,12 @@ function deployServer() {
         fi
 
         # sshpass -p z scp -r z@${srv}:${dst}/certs z@${srv}:${dst}/certs
-        sshpass -p z scp ${src}/bin/zpbft z@${srv}:${dst}/zpbft
+        # sshpass -p z scp ${src}/bin/zpbft z@${srv}:${dst}/zpbft
+        if [[ "${srv}" == "${servers[0]}" ]]; then
+            sshpass -p z scp ${src}/bin/zpbft z@${srv}:${dst}/zpbft
+        else
+            sshpass -p z scp z@${servers[0]}:${dst}/zpbft z@${srv}:${dst}/zpbft
+        fi
         sshpass -p z scp -r ${src}/config/config.json z@${srv}:${dst}/config/config.json
         echo ${srv} >config/local_ip.txt
         sshpass -p z scp -r ${src}/config/local_ip.txt z@${srv}:${dst}/config/local_ip.txt

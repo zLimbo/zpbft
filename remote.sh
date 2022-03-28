@@ -51,4 +51,4 @@ printf "run %s..." ${client}
 sshpass -p z ssh z@${client} ${cmd}
 printf "\rrun %s ok\n" ${client}
 
-echo "scp z@${client}:~/2zp/${time}.log ."
+echo "scp z@${client}:${dst}/${time}.log ."
