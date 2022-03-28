@@ -30,11 +30,10 @@ type LogCert struct {
 	view     int64
 	req      *RequestArgs
 	digest   []byte
-	prepares map[int64]*PrepareArgs
-	commits  map[int64]*CommitArgs
-	prepareQ []*PrepareArgs
-	commitQ  []*CommitArgs
+	prepares map[int64][]byte
+	commits  map[int64][]byte
 	stage    Stage
+	canReply bool
 	mu       sync.Mutex
 }
 
@@ -51,32 +50,24 @@ func (lc *LogCert) get() (*RequestArgs, []byte, int64) {
 	return lc.req, lc.digest, lc.view
 }
 
-func (lc *LogCert) pushPrepare(args *PrepareArgs) {
+func (lc *LogCert) popAllPrepares() [][]byte {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
-	lc.prepareQ = append(lc.prepareQ, args)
+	prepares := make([][]byte, 0, len(lc.prepares))
+	for _, prepare := range lc.prepares {
+		prepares = append(prepares, prepare)
+	}
+	return prepares
 }
 
-func (lc *LogCert) pushCommit(args *CommitArgs) {
+func (lc *LogCert) popAllCommits() [][]byte {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
-	lc.commitQ = append(lc.commitQ, args)
-}
-
-func (lc *LogCert) popAllPrepares() []*PrepareArgs {
-	lc.mu.Lock()
-	defer lc.mu.Unlock()
-	argsQ := lc.prepareQ
-	lc.prepareQ = nil
-	return argsQ
-}
-
-func (lc *LogCert) popAllCommits() []*CommitArgs {
-	lc.mu.Lock()
-	defer lc.mu.Unlock()
-	argsQ := lc.commitQ
-	lc.commitQ = nil
-	return argsQ
+	commits := make([][]byte, 0, len(lc.commits))
+	for _, commit := range lc.commits {
+		commits = append(commits, commit)
+	}
+	return commits
 }
 
 func (lc *LogCert) getStage() Stage {
@@ -101,16 +92,16 @@ func (lc *LogCert) commitVoted(nodeId int64) bool {
 	return ok
 }
 
-func (lc *LogCert) prepareVote(args *PrepareArgs) {
+func (lc *LogCert) prepareVote(nodeId int64, sign []byte) {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
-	lc.prepares[args.Msg.NodeId] = args
+	lc.prepares[nodeId] = sign
 }
 
-func (lc *LogCert) commitVote(args *CommitArgs) {
+func (lc *LogCert) commitVote(nodeId int64, sign []byte) {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
-	lc.commits[args.Msg.NodeId] = args
+	lc.commits[nodeId] = sign
 }
 
 func (lc *LogCert) prepareBallot() int {
@@ -134,8 +125,6 @@ func (lc *LogCert) clear() {
 	lc.digest = nil
 	lc.prepares = nil
 	lc.commits = nil
-	lc.prepareQ = nil
-	lc.commitQ = nil
 }
 
 type RequestMsg struct {
@@ -152,17 +141,19 @@ type PrePrepareMsg struct {
 }
 
 type PrepareMsg struct {
-	View   int64
-	Seq    int64
-	Digest []byte
-	NodeId int64
+	View          int64
+	Seq           int64
+	Digest        []byte
+	AggregateSign []byte
+	NodeId        int64
 }
 
 type CommitMsg struct {
-	View   int64
-	Seq    int64
-	Digest []byte
-	NodeId int64
+	View          int64
+	Seq           int64
+	Digest        []byte
+	AggregateSign []byte
+	NodeId        int64
 }
 
 type ReplyMsg struct {
@@ -190,13 +181,28 @@ type PrePrepareArgs struct {
 	ReqArgs *RequestArgs
 }
 
+type PrePrepareReply struct {
+	Ok   bool
+	Sign []byte
+}
+
 type PrepareArgs struct {
 	Msg  *PrepareMsg
 	Sign []byte
 }
 
+type PrepareReply struct {
+	Ok   bool
+	Sign []byte
+}
+
 type CommitArgs struct {
 	Msg  *CommitMsg
+	Sign []byte
+}
+
+type CommitReply struct {
+	Ok   bool
 	Sign []byte
 }
 

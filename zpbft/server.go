@@ -33,10 +33,8 @@ func (s *Server) getCertOrNew(seq int64) *LogCert {
 	if !ok {
 		cert = &LogCert{
 			seq:      seq,
-			prepares: make(map[int64]*PrepareArgs),
-			commits:  make(map[int64]*CommitArgs),
-			prepareQ: make([]*PrepareArgs, 0),
-			commitQ:  make([]*CommitArgs, 0),
+			prepares: make(map[int64][]byte),
+			commits:  make(map[int64][]byte),
 		}
 		s.seq2cert[seq] = cert
 	}
@@ -68,16 +66,6 @@ func (s *Server) RequestRpc(args *RequestArgs, reply *RequestReply) error {
 		Sign: sign,
 	}
 
-	// 验证RequestMsg
-	// node := GetNode(args.Req.ClientId)
-	// digest := Sha256Digest(args.Req)
-	// ok := RsaVerifyWithSha256(digest, args.Sign, node.pubKey)
-	// if !ok {
-	// 	Warn("RequestMsg verify error, from: %d", args.Req.ClientId)
-	// 	reply.Ok = false
-	// 	return nil
-	// }
-
 	// leader 分配seq
 	seq := s.assignSeq()
 	s.getCertOrNew(seq).set(args, digest, s.view)
@@ -91,7 +79,9 @@ func (s *Server) RequestRpc(args *RequestArgs, reply *RequestReply) error {
 }
 
 func (s *Server) PrePrepare(seq int64) {
-	req, digest, view := s.getCertOrNew(seq).get()
+	Debug("PrePrepare, seq: %d", seq)
+	cert := s.getCertOrNew(seq)
+	req, digest, view := cert.get()
 	msg := &PrePrepareMsg{
 		View:   view,
 		Seq:    seq,
@@ -107,26 +97,36 @@ func (s *Server) PrePrepare(seq int64) {
 		ReqArgs: req,
 	}
 
-	// 等待发完2f个节点再进入下一阶段
+	// 发送 PrePrepare 消息，接受 2f 个签名后进入下一阶段
+
 	for id, srvCli := range s.id2srvCli {
 		id1, srvCli1 := id, srvCli
-		go func() { // 异步发送
-			var reply bool
+		// 异步发送
+		go func() {
+			var reply PrePrepareReply
 			err := srvCli1.Call("Server.PrePrepareRpc", args, &reply)
 			if err != nil {
 				Error("Server.PrePrepareRpc %d error: %v", id1, err)
 			}
+			// 验证签名
+			if reply.Ok && !cert.prepareVoted(id1) &&
+				RsaVerifyWithSha256(digest, reply.Sign, GetNode(id1).pubKey) {
+				cert.prepareVote(id1, reply.Sign)
+				// 进入 prepare 阶段
+				if cert.prepareBallot() >= 2*KConfig.FalultNum {
+					s.Prepare(seq)
+				}
+			}
 		}()
 	}
-	Debug("PrePrepare %d ok", seq)
-	s.Prepare(seq)
 }
 
-func (s *Server) PrePrepareRpc(args *PrePrepareArgs, reply *bool) error {
+func (s *Server) PrePrepareRpc(args *PrePrepareArgs, reply *PrePrepareReply) error {
 	msg := args.Msg
 	Debug("PrePrepareRpc, seq: %d, from: %d", msg.Seq, msg.NodeId)
+
 	// 预设返回失败
-	*reply = false
+	reply.Ok = false
 
 	// 验证PrePrepareMsg
 	node := GetNode(msg.NodeId)
@@ -155,25 +155,31 @@ func (s *Server) PrePrepareRpc(args *PrePrepareArgs, reply *bool) error {
 	cert := s.getCertOrNew(msg.Seq)
 	cert.set(reqArgs, digest, msg.View)
 
-	// 进入Prepare投票
-	go s.Prepare(cert.seq)
+	// 返回成对req摘要的签名
+	reply.Sign = RsaSignWithSha256(digest, s.node.priKey)
+	reply.Ok = true
 
-	// 计票
-	s.verifyBallot(cert)
-
-	// 返回成功
-	*reply = true
 	return nil
 }
 
 func (s *Server) Prepare(seq int64) {
-	_, digest, view := s.getCertOrNew(seq).get()
-	msg := &PrepareMsg{
-		View:   view,
-		Seq:    seq,
-		Digest: digest,
-		NodeId: s.node.id,
+	Debug("Prepare, seq: %d", seq)
+	// TODO: 聚合签名，此处只是暂时将其合并
+	cert := s.getCertOrNew(seq)
+	aggregateSign := make([]byte, 0)
+	for _, sign := range cert.popAllPrepares() {
+		aggregateSign = append(aggregateSign, sign...)
 	}
+
+	_, digest, view := cert.get()
+	msg := &PrepareMsg{
+		View:          view,
+		Seq:           seq,
+		Digest:        digest,
+		AggregateSign: aggregateSign,
+		NodeId:        s.node.id,
+	}
+
 	digest = Sha256Digest(msg)
 	sign := RsaSignWithSha256(digest, s.node.priKey)
 	// 配置rpc参数,相比PrePrepare无需req
@@ -181,39 +187,76 @@ func (s *Server) Prepare(seq int64) {
 		Msg:  msg,
 		Sign: sign,
 	}
+
+	// 对聚合签名摘要，也是commit消息验签的对象，所以这里先计算出
+	digest = Sha256Digest(aggregateSign)
+
 	for id, srvCli := range s.id2srvCli {
 		id1, srvCli1 := id, srvCli
 		go func() { // 异步发送
-			var reply bool
+			var reply PrepareReply
 			err := srvCli1.Call("Server.PrepareRpc", args, &reply)
 			if err != nil {
 				Error("Server.PrepareRpc %d error: %v", id1, err)
+			}
+			// 验证签名
+			if reply.Ok && !cert.commitVoted(id1) &&
+				RsaVerifyWithSha256(digest, reply.Sign, GetNode(id1).pubKey) {
+				cert.commitVote(id1, reply.Sign)
+				// 进入 commit 阶段
+				if cert.commitBallot() >= 2*KConfig.FalultNum {
+					s.Commit(seq)
+				}
 			}
 		}()
 	}
 }
 
-func (s *Server) PrepareRpc(args *PrepareArgs, reply *bool) error {
+func (s *Server) PrepareRpc(args *PrepareArgs, reply *PrepareReply) error {
 	msg := args.Msg
 	Debug("PrepareRpc, seq: %d, from: %d", msg.Seq, msg.NodeId)
 
-	// 这里先不验证，因为可能 req 消息还未收到，先存下投票信息后期验证
-	cert := s.getCertOrNew(msg.Seq)
-	cert.pushPrepare(args)
-	s.verifyBallot(cert)
+	// 预设返回失败
+	reply.Ok = false
 
-	*reply = true
+	// 验证PrepareMsg
+	node := GetNode(msg.NodeId)
+	digest := Sha256Digest(msg)
+	ok := RsaVerifyWithSha256(digest, args.Sign, node.pubKey)
+	if !ok {
+		Warn("PrepareMsg verify error, seq: %d, from: %d", msg.Seq, msg.NodeId)
+		return nil
+	}
+
+	// TODO：验证聚合签名，暂无
+	aggregateSign := args.Msg.AggregateSign
+
+	// 对聚合签名做签名
+	digest = Sha256Digest(aggregateSign)
+	sign := RsaSignWithSha256(digest, s.node.priKey)
+
+	reply.Sign = sign
+	reply.Ok = true
+
 	return nil
 }
 
 func (s *Server) Commit(seq int64) {
-	// cmd := s.getCertOrNew(seq).getCmd() // req一定存在
-	_, digest, view := s.getCertOrNew(seq).get()
+	Debug("Commit, seq: %d", seq)
+	// TODO: 聚合签名，此处只是暂时将其合并
+	cert := s.getCertOrNew(seq)
+	aggregateSign := make([]byte, 0)
+	for _, sign := range cert.popAllCommits() {
+		aggregateSign = append(aggregateSign, sign...)
+	}
+
+	_, digest, view := cert.get()
 	msg := &CommitMsg{
-		View:   view,
-		Seq:    seq,
-		Digest: digest,
-		NodeId: s.node.id,
+		View:          view,
+		Seq:           seq,
+		Digest:        digest,
+		AggregateSign: aggregateSign,
+		NodeId:        s.node.id,
 	}
 	digest = Sha256Digest(msg)
 	sign := RsaSignWithSha256(digest, s.node.priKey)
@@ -225,7 +268,7 @@ func (s *Server) Commit(seq int64) {
 	for id, srvCli := range s.id2srvCli {
 		id1, srvCli1 := id, srvCli
 		go func() { // 异步发送
-			var reply bool
+			var reply CommitReply
 			err := srvCli1.Call("Server.CommitRpc", args, &reply)
 			if err != nil {
 				Error("Server.CommitRpc %d error: %v", id1, err)
@@ -234,106 +277,40 @@ func (s *Server) Commit(seq int64) {
 	}
 }
 
-func (s *Server) CommitRpc(args *CommitArgs, reply *bool) error {
+func (s *Server) CommitRpc(args *CommitArgs, reply *CommitReply) error {
 	msg := args.Msg
 	Debug("CommitRpc, seq: %d, from: %d", msg.Seq, msg.NodeId)
 
-	// 这里先不验证，因为可能 req 消息还未收到，先存下投票信息后期验证
-	cert := s.getCertOrNew(msg.Seq)
-	cert.pushCommit(args)
-	s.verifyBallot(cert)
+	// 预设返回失败
+	reply.Ok = false
 
-	*reply = true
+	// 验证CommitMsg
+	node := GetNode(msg.NodeId)
+	digest := Sha256Digest(msg)
+	ok := RsaVerifyWithSha256(digest, args.Sign, node.pubKey)
+	if !ok {
+		Warn("CommitRpc verify error, seq: %d, from: %d", msg.Seq, msg.NodeId)
+		return nil
+	}
+
+	// TODO：验证聚合签名，暂无
+	// aggregateSign := args.Msg.AggregateSign
+
+	go s.Reply(args.Msg.Seq)
+
+	reply.Ok = true
 	return nil
-}
-
-func (s *Server) verifyBallot(cert *LogCert) {
-	req, reqDigest, view := cert.get()
-
-	// cmd 为空则不进行后续阶段
-	if req == nil {
-		Debug("march, cmd is nil")
-		return
-	}
-	// Debug("march, seq: %d, prepare: %d, commit: %d, stage: %d",
-	// 	cert.seq, cert.prepareBallot(), cert.commitBallot(), cert.getStage())
-
-	switch cert.getStage() {
-	case PrepareStage:
-		argsQ := cert.popAllPrepares()
-		for _, args := range argsQ {
-			msg := args.Msg
-			if cert.prepareVoted(msg.NodeId) { // 已投票
-				continue
-			}
-			if view != msg.View {
-				Warn("PrepareMsg error, view(%d) != msg.View(%d)", view, msg.View)
-				continue
-			}
-			if !SliceEqual(reqDigest, msg.Digest) {
-				Warn("PrePrepareMsg error, req.digest != msg.Digest")
-				continue
-			}
-			// 验证PrepareMsg
-			node := GetNode(msg.NodeId)
-			digest := Sha256Digest(msg)
-			ok := RsaVerifyWithSha256(digest, args.Sign, node.pubKey)
-			if !ok {
-				Warn("PrepareMsg verify error, seq: %d, from: %d", msg.Seq, msg.NodeId)
-				continue
-			}
-			cert.prepareVote(args)
-		}
-		// 2f + 1 (包括自身) 后进入 commit 阶段
-		if cert.prepareBallot() >= 2*KConfig.FalultNum {
-			cert.setStage(CommitStage)
-			go s.Commit(cert.seq)
-		} else {
-			break
-		}
-		fallthrough // 进入后续判断
-	case CommitStage:
-		argsQ := cert.popAllCommits()
-		for _, args := range argsQ {
-			msg := args.Msg
-			if cert.commitVoted(msg.NodeId) { // 已投票
-				continue
-			}
-			if view != msg.View {
-				Warn("PrepareMsg error, view(%d) != msg.View(%d)", view, msg.View)
-				continue
-			}
-			if !SliceEqual(reqDigest, msg.Digest) {
-				Warn("PrePrepareMsg error, req.digest != msg.Digest")
-				continue
-			}
-			// 验证PrepareMsg
-			node := GetNode(msg.NodeId)
-			digest := Sha256Digest(msg)
-			ok := RsaVerifyWithSha256(digest, args.Sign, node.pubKey)
-			if !ok {
-				Warn("PrepareMsg verify error, seq: %d, from: %d", msg.Seq, msg.NodeId)
-				continue
-			}
-			cert.commitVote(args)
-		}
-		// 2f + 1 (包括自身) 后进入 reply 阶段
-		if cert.commitBallot() >= 2*KConfig.FalultNum {
-			cert.setStage(ReplyStage)
-			go s.Reply(cert.seq)
-		}
-	}
 }
 
 func (s *Server) Reply(seq int64) {
 	Debug("Reply %d", seq)
-	req, _, view := s.getCertOrNew(seq).get()
+	_, _, view := s.getCertOrNew(seq).get()
 	msg := &ReplyMsg{
 		View:      view,
 		Seq:       seq,
 		Timestamp: time.Now().UnixNano(),
-		ClientId:  req.Req.ClientId,
-		NodeId:    s.node.id,
+		// ClientId:  req.Req.ClientId,
+		NodeId: s.node.id,
 		// Result:    req.Req.Operator,
 	}
 	digest := Sha256Digest(msg)
@@ -343,15 +320,16 @@ func (s *Server) Reply(seq int64) {
 		Sign: sign,
 	}
 	var reply bool
-	cliCli := s.getCliCli(req.Req.ClientId)
+	clientId := KConfig.ClientNode.id
+	cliCli := s.getCliCli(clientId)
 	if cliCli == nil {
-		Warn("can't connect client %d", req.Req.ClientId)
+		Warn("can't connect client %d", clientId)
 		return
 	}
 	err := cliCli.Call("Client.ReplyRpc", replyArgs, &reply)
 	if err != nil {
 		Warn("Client.ReplyRpc error: %v", err)
-		s.closeCliCli(req.Req.ClientId)
+		s.closeCliCli(clientId)
 	}
 	s.cleanCert(seq)
 }
