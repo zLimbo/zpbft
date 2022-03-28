@@ -12,18 +12,24 @@ servers=(
     "219.228.148.231"
 )
 
+src='.'
+dst="/home/z/zpbft"
+
 function deployClient() {
     printf "\n[deployClient]\n"
 
     printf "deploy client in %-16s ..." ${client}
     start=$(date +%s)
 
-    echo ${client} >config/local_ip.txt
-    sshpass -p z scp -r config z@${client}:~/zpbft/config
-    sshpass -p z scp bin/zpbft z@${client}:~/zpbft/zpbft
-    sshpass -p z scp -r certs z@${client}:~/zpbft/certs
+    if ! ssh z@${client} test -e ${dst}/config; then
+        sshpass -p z ssh z@${client} mkdir -p ${dst}/config
+    fi
 
-    sshpass -p z scp -r config/config.json z@${client}:~/zpbft/config/config.json
+    # sshpass -p z scp -r certs z@${client}:~/zpbft/certs
+    sshpass -p z scp ${src}/bin/zpbft z@${client}:${dst}/zpbft
+    sshpass -p z scp -r ${src}/config/config.json z@${client}:${dst}/config/config.json
+    echo ${client} >config/local_ip.txt
+    sshpass -p z scp -r ${src}/config/local_ip.txt z@${client}:${dst}/config/local_ip.txt
 
     end=$(date +%s)
     take=$((end - start))
@@ -37,12 +43,21 @@ function deployServer() {
         printf "deploy server in %-16s ..." ${srv}
         start=$(date +%s)
 
-        echo ${srv} >config/local_ip.txt
-        sshpass -p z scp -r config z@${srv}:~/zpbft/config
-        sshpass -p z scp bin/zpbft z@${srv}:~/zpbft/zpbft
-        sshpass -p z scp -r certs z@${srv}:~/zpbft/certs
+        if ! ssh z@${srv} test -e ${dst}/config; then
+            echo "mkdir ${dst}"
+            sshpass -p z ssh z@${srv} mkdir -p ${dst}/config
+        fi
 
-        sshpass -p z scp -r config/config.json z@${srv}:~/zpbft/config/config.json
+        # sshpass -p z scp -r z@${srv}:${dst}/certs z@${srv}:${dst}/certs
+        # sshpass -p z scp ${src}/bin/zpbft z@${srv}:${dst}/zpbft
+        if [[ "${srv}" == "${servers[0]}" ]]; then
+            sshpass -p z scp ${src}/bin/zpbft z@${srv}:${dst}/zpbft
+        else
+            sshpass -p z scp z@${servers[0]}:${dst}/zpbft z@${srv}:${dst}/zpbft
+        fi
+        sshpass -p z scp -r ${src}/config/config.json z@${srv}:${dst}/config/config.json
+        echo ${srv} >config/local_ip.txt
+        sshpass -p z scp -r ${src}/config/local_ip.txt z@${srv}:${dst}/config/local_ip.txt
 
         end=$(date +%s)
         take=$((end - start))
