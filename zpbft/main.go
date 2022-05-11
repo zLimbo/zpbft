@@ -1,35 +1,25 @@
 package main
 
-import (
-	"flag"
-	"runtime"
-)
+import "flag"
 
 func main() {
-	InitConfig()
 
-	if IsClient() { // 启动客户端
+	var role, mhost, host, pri, pub string
+	flag.StringVar(&role, "role", "", "")
+	flag.StringVar(&mhost, "mhost", "", "")
+	flag.StringVar(&host, "host", "", "")
+	flag.StringVar(&pri, "pri", "", "")
+	flag.StringVar(&pub, "pub", "", "")
 
-		Info("start client...")
+	flag.Parse()
 
-		var clientNum int
-		flag.IntVar(&clientNum, "clientNum", 1, "客户端并发数目")
-		flag.Parse()
-		Info("clientNum: %d", clientNum)
-		runtime.GOMAXPROCS(clientNum)
-
-		RunClient(clientNum)
-
-	} else {
-		var processIdx int
-		flag.IntVar(&processIdx, "i", 1, "进程号")
-		flag.Parse()
-
-		Info("start server...")
-		runtime.GOMAXPROCS(KConfig.GoMaxProcs)
-		nodeId := GetId(KConfig.LocalIp, KConfig.PortBase+processIdx)
-
-		RunServer(nodeId)
-
+	Info("role:%s, mhost:%s, host:%s", role, mhost, host)
+	switch role {
+	case "master":
+		RunMaster(mhost)
+	case "server":
+		RunServer(mhost, host, pri, pub)
+	case "client":
+		// RunClient(mhost, host, pri, pub)
 	}
 }

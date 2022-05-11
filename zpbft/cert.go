@@ -19,6 +19,7 @@ const (
 )
 
 type CmdCert struct {
+	cliId int
 	seq    int64
 	digest []byte
 	start  time.Time
@@ -128,14 +129,7 @@ func (lc *LogCert) commitBallot() int {
 func (lc *LogCert) clear() {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
-
-	lc.req.Sign = nil
 	lc.req.Req.Operator = nil
-	lc.digest = nil
-	lc.prepares = nil
-	lc.commits = nil
-	lc.prepareQ = nil
-	lc.commitQ = nil
 }
 
 type RequestMsg struct {

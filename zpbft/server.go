@@ -1,8 +1,6 @@
 package main
 
 import (
-	"log"
-	"net/http"
 	"net/rpc"
 	"sync"
 	"sync/atomic"
@@ -14,11 +12,12 @@ type Server struct {
 	seqCh     chan int64
 	logs      []*Log
 	seq2cert  map[int64]*LogCert
-	id2srvCli map[int64]*rpc.Client
-	id2cliCli map[int64]*rpc.Client
+	id2srvRpc map[int64]*rpc.Client
+	id2cliRpc map[int64]*rpc.Client
 	mu        sync.Mutex
 	seqInc    int64
 	view      int64
+	coch      chan interface{}
 }
 
 func (s *Server) assignSeq() int64 {
@@ -53,30 +52,15 @@ func (s *Server) RequestRpc(args *RequestArgs, reply *RequestReply) error {
 
 	Debug("RequestRpc, from: %d", args.Req.ClientId)
 
-	// server构造 req 发送
-	req := &RequestMsg{
-		Operator:  make([]byte, KConfig.BatchTxNum*KConfig.TxSize),
-		Timestamp: time.Now().UnixNano(),
-		ClientId:  args.Req.ClientId,
-	}
-	node := GetNode(args.Req.ClientId)
-	digest := Sha256Digest(req)
-	sign := RsaSignWithSha256(digest, node.priKey)
-
-	args = &RequestArgs{
-		Req:  req,
-		Sign: sign,
-	}
-
 	// 验证RequestMsg
-	// node := GetNode(args.Req.ClientId)
-	// digest := Sha256Digest(args.Req)
-	// ok := RsaVerifyWithSha256(digest, args.Sign, node.pubKey)
-	// if !ok {
-	// 	Warn("RequestMsg verify error, from: %d", args.Req.ClientId)
-	// 	reply.Ok = false
-	// 	return nil
-	// }
+	node := GetNode(args.Req.ClientId)
+	digest := Sha256Digest(args.Req)
+	ok := RsaVerifyWithSha256(digest, args.Sign, node.pubKey)
+	if !ok {
+		Warn("RequestMsg verify error, from: %d", args.Req.ClientId)
+		reply.Ok = false
+		return nil
+	}
 
 	// leader 分配seq
 	seq := s.assignSeq()
@@ -108,7 +92,7 @@ func (s *Server) PrePrepare(seq int64) {
 	}
 
 	// 等待发完2f个节点再进入下一阶段
-	for id, srvCli := range s.id2srvCli {
+	for id, srvCli := range s.id2srvRpc {
 		id1, srvCli1 := id, srvCli
 		go func() { // 异步发送
 			var reply bool
@@ -181,7 +165,7 @@ func (s *Server) Prepare(seq int64) {
 		Msg:  msg,
 		Sign: sign,
 	}
-	for id, srvCli := range s.id2srvCli {
+	for id, srvCli := range s.id2srvRpc {
 		id1, srvCli1 := id, srvCli
 		go func() { // 异步发送
 			var reply bool
@@ -222,7 +206,7 @@ func (s *Server) Commit(seq int64) {
 		Msg:  msg,
 		Sign: sign,
 	}
-	for id, srvCli := range s.id2srvCli {
+	for id, srvCli := range s.id2srvRpc {
 		id1, srvCli1 := id, srvCli
 		go func() { // 异步发送
 			var reply bool
@@ -354,12 +338,13 @@ func (s *Server) Reply(seq int64) {
 		s.closeCliCli(req.Req.ClientId)
 	}
 	s.cleanCert(seq)
+	s.coch <- 1
 }
 
 func (s *Server) getCliCli(clientId int64) *rpc.Client {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cliCli, ok := s.id2cliCli[clientId]
+	cliCli, ok := s.id2cliRpc[clientId]
 	if !ok || cliCli == nil {
 		node := GetNode(clientId)
 		var err error
@@ -368,7 +353,7 @@ func (s *Server) getCliCli(clientId int64) *rpc.Client {
 			Warn("connect client %d error: %v", node.addr, err)
 			return nil
 		}
-		s.id2cliCli[clientId] = cliCli
+		s.id2cliRpc[clientId] = cliCli
 	}
 	return cliCli
 }
@@ -377,10 +362,10 @@ func (s *Server) closeCliCli(clientId int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	Info("close connect with client %d", clientId)
-	cliCli, ok := s.id2cliCli[clientId]
+	cliCli, ok := s.id2cliRpc[clientId]
 	if ok && cliCli != nil {
 		cliCli = nil
-		delete(s.id2cliCli, clientId)
+		delete(s.id2cliRpc, clientId)
 	}
 }
 
@@ -400,13 +385,13 @@ func (s *Server) connect() {
 			if node == s.node {
 				continue
 			}
-			if s.id2srvCli[id] == nil {
+			if s.id2srvRpc[id] == nil {
 				cli, err := rpc.DialHTTP("tcp", node.addr)
 				if err != nil {
 					Warn("connect %s error: %v", node.addr, err)
 					ok = false
 				} else {
-					s.id2srvCli[id] = cli
+					s.id2srvRpc[id] = cli
 				}
 
 			}
@@ -420,6 +405,7 @@ func (s *Server) workLoop() {
 
 	for seq := range s.seqCh {
 		s.PrePrepare(seq)
+		<-s.coch
 	}
 }
 
@@ -428,25 +414,40 @@ func (s *Server) Start() {
 	s.workLoop()
 }
 
-func RunServer(id int64) {
-	server := &Server{
-		node:      KConfig.Id2Node[id],
-		seqCh:     make(chan int64, ChanSize),
-		logs:      make([]*Log, 0),
-		seq2cert:  make(map[int64]*LogCert),
-		id2srvCli: make(map[int64]*rpc.Client),
-		id2cliCli: make(map[int64]*rpc.Client),
-	}
-	// 每个分配序号后缀为节点id(8位)
-	server.seqInc = server.node.id
-	// 当前暂无view-change, view暂且设置为server id
-	server.view = server.node.id
+// func RunServer(id int64) {
+// 	server := &Server{
+// 		node:      KConfig.Id2Node[id],
+// 		seqCh:     make(chan int64, ChanSize),
+// 		logs:      make([]*Log, 0),
+// 		seq2cert:  make(map[int64]*LogCert),
+// 		id2srvRpc: make(map[int64]*rpc.Client),
+// 		id2cliRpc: make(map[int64]*rpc.Client),
+// 		coch:      make(chan interface{}, 1),
+// 	}
+// 	// 每个分配序号后缀为节点id(8位)
+// 	server.seqInc = server.node.id
+// 	// 当前暂无view-change, view暂且设置为server id
+// 	server.view = server.node.id
 
-	go server.Start()
+// 	go server.Start()
 
-	rpc.Register(server)
-	rpc.HandleHTTP()
-	if err := http.ListenAndServe(server.node.addr, nil); err != nil {
-		log.Fatal("server error: ", err)
+// 	rpc.Register(server)
+// 	rpc.HandleHTTP()
+// 	if err := http.ListenAndServe(server.node.addr, nil); err != nil {
+// 		log.Fatal("server error: ", err)
+// 	}
+// }
+
+func RunServer(mhost, host, pri, pub string) {
+	cli, err := rpc.DialHTTP("tcp", mhost)
+	if err != nil {
+		Error("err:%v", err)
 	}
+	args := &RegisterArgs{
+		Host: host,
+	}
+	reply := &RegisterReply{}
+	cli.Call("Master.RegisterRpc", args, reply)
+
+	Info("args:%v, reply:%v", args, reply)
 }

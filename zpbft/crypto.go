@@ -6,7 +6,6 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
-	"encoding/json"
 	"encoding/pem"
 	"io/ioutil"
 )
@@ -67,6 +66,7 @@ func RsaVerifyWithSha256(data, sign, keyBytes []byte) bool {
 }
 
 func Sha256Digest(msg interface{}) []byte {
+	
 	msgBytes := JsonMarshal(msg)
 
 	sha256 := sha256.New()
@@ -76,9 +76,10 @@ func Sha256Digest(msg interface{}) []byte {
 }
 
 func JsonMarshal(msg interface{}) []byte {
-	msgBytes, err := json.Marshal(msg)
-	if err != nil {
-		Error("json.Marshal(msg), err: %v", err)
-	}
-	return msgBytes
+	return make([]byte, 100)
+	// msgBytes, err := json.Marshal(msg)
+	// if err != nil {
+	// 	Error("json.Marshal(msg), err: %v", err)
+	// }
+	// return msgBytes
 }

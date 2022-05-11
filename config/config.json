@@ -1,28 +1,10 @@
 {
-    "PeerIps": [
-        "219.228.148.45",
-        "219.228.148.80",
-        "219.228.148.89",
-        "219.228.148.129",
-        "219.228.148.178",
-        "219.228.148.181",
-        "219.228.148.222",
-        "219.228.148.231"
+    "ServerHosts": [
+        "127.0.0.1:8001",
+        "127.0.0.1:8002",
+        "127.0.0.1:8003",
+        "127.0.0.1:8004"
     ],
-    "ClientIp": "219.228.148.154",
-    "IpNum": 8,
-    "PortBase": 10000,
-    "ProcessNum": 1,
-    "ReqNum": 200,
-    "BoostNum": 3,
-    "StartDelay": 3000,
-    "RecvBufSize": 2048,
-    "LogStdout": true,
-    "LogLevel": 0,
-    "GoMaxProcs": 4,
-    "BatchTxNum": 200,
-    "TxSize": 400,
-    "GossipNum": 3,
-    "EnableGossip": false,
-    "ExecNum": 0
+    "ClientHost": "127.0.0.1:8000",
+    "LogLevel": 0
 }
