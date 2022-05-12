@@ -4,22 +4,26 @@ import "flag"
 
 func main() {
 
-	var role, mhost, host, pri, pub string
-	flag.StringVar(&role, "role", "", "")
-	flag.StringVar(&mhost, "mhost", "", "")
-	flag.StringVar(&host, "host", "", "")
-	flag.StringVar(&pri, "pri", "", "")
-	flag.StringVar(&pub, "pub", "", "")
+	var role, maddr, saddr, caddr, pri, pub string
+	var f, logLevel int
+	flag.StringVar(&role, "role", "", "role of process")
+	flag.StringVar(&maddr, "maddr", "", "address of master")
+	flag.StringVar(&saddr, "addr", "", "address of server")
+	flag.StringVar(&caddr, "addr", "", "address of client")
+	flag.StringVar(&pri, "pri", "", "private key file")
+	flag.StringVar(&pub, "pub", "", "public key file")
+	flag.IntVar(&f, "f", 1, "fault tolerance num")
+	flag.IntVar(&logLevel, "log", 0, "log level(0:Debug,1:Info,2:Warn,3:Error)")
 
 	flag.Parse()
 
-	Info("role:%s, mhost:%s, host:%s", role, mhost, host)
 	switch role {
 	case "master":
-		RunMaster(mhost)
+		RunMaster(maddr, f)
 	case "server":
-		RunServer(mhost, host, pri, pub)
+		RunServer(maddr, saddr, pri, pub)
 	case "client":
-		// RunClient(mhost, host, pri, pub)
+		RunClient(maddr, caddr)
 	}
+	
 }

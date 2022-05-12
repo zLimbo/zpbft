@@ -8,10 +8,10 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"os"
 	"strconv"
 	"strings"
+	"zpbft/zlog"
 )
 
 func main() {
@@ -24,7 +24,7 @@ func main() {
 	flag.IntVar(&processNum, "n", 8, "每个ip运行进程数")
 
 	ips := ReadIps(inPath)
-	Info("ips: \n%v", ips)
+	zlog.Info("ips: \n%v", ips)
 
 	ipNum := len(ips)
 
@@ -34,16 +34,16 @@ func main() {
 func GenRsaKeys(ips []string, ipNum int, processNum int, outPath string) {
 	if IsExist(outPath) {
 		// 存在则删除已有目录
-		Info("rm %s", outPath)
+		zlog.Info("rm %s", outPath)
 		os.RemoveAll(outPath)
 	}
 
 	err := os.Mkdir(outPath, 0744)
 	if err != nil {
-		Error("os.Mkdir(\"certs\", 0744), err: %v", err)
+		zlog.Error("os.Mkdir(\"certs\", 0744), err: %v", err)
 	}
-	Info("mkdir %s", outPath)
-	Info("gen ...")
+	zlog.Info("mkdir %s", outPath)
+	zlog.Info("gen ...")
 	for _, ip := range ips[:ipNum] {
 		for i := 1; i <= processNum; i++ {
 			id := GetId(ip, i)
@@ -51,14 +51,14 @@ func GenRsaKeys(ips []string, ipNum int, processNum int, outPath string) {
 			if !IsExist(keyDir) {
 				err := os.Mkdir(keyDir, 0744)
 				if err != nil {
-					Error("os.Mkdir(\"certs\", 0744), err: %v", err)
+					zlog.Error("os.Mkdir(\"certs\", 0744), err: %v", err)
 				}
 			}
 			pri, pub := GetKeyPair()
 			priFilePath := keyDir + "/rsa.pri.pem"
 			priFile, err := os.OpenFile(priFilePath, os.O_RDWR|os.O_CREATE, 0644)
 			if err != nil {
-				Error("os.OpenFile(priFilePath, os.O_RDWR|os.O_CREATE, 0644), err: %v", err)
+				zlog.Error("os.OpenFile(priFilePath, os.O_RDWR|os.O_CREATE, 0644), err: %v", err)
 			}
 			defer priFile.Close()
 			priFile.Write(pri)
@@ -66,7 +66,7 @@ func GenRsaKeys(ips []string, ipNum int, processNum int, outPath string) {
 			pubFilePath := keyDir + "/rsa.pub.pem"
 			pubFile, err := os.OpenFile(pubFilePath, os.O_RDWR|os.O_CREATE, 0644)
 			if err != nil {
-				Error("os.OpenFile(pubFilePath, os.O_RDWR|os.O_CREATE, 0644), err: %v", err)
+				zlog.Error("os.OpenFile(pubFilePath, os.O_RDWR|os.O_CREATE, 0644), err: %v", err)
 			}
 			defer pubFile.Close()
 			pubFile.Write(pub)
@@ -75,13 +75,13 @@ func GenRsaKeys(ips []string, ipNum int, processNum int, outPath string) {
 			addrFilePath := keyDir + "/" + addr + ".addr.txt"
 			addrFile, err := os.OpenFile(addrFilePath, os.O_RDWR|os.O_CREATE, 0644)
 			if err != nil {
-				Error(" os.OpenFile(addrFilePath, os.O_RDWR|os.O_CREATE, 0644), err: %v", err)
+				zlog.Error(" os.OpenFile(addrFilePath, os.O_RDWR|os.O_CREATE, 0644), err: %v", err)
 			}
 			defer addrFile.Close()
 			addrFile.WriteString(ip + ":" + strconv.Itoa(8000+i))
 		}
 	}
-	Info("gen ok")
+	zlog.Info("gen ok")
 }
 
 func IsExist(path string) bool {
@@ -93,7 +93,7 @@ func IsExist(path string) bool {
 		if os.IsNotExist(err) {
 			return false
 		}
-		Warn("err: %v", err)
+		zlog.Warn("err: %v", err)
 		return false
 	}
 	return true
@@ -130,7 +130,7 @@ func GetId(ip string, port int) int64 {
 	for _, span := range strings.Split(ip, ".")[2:] {
 		num, err := strconv.Atoi(span)
 		if err != nil {
-			Error("err: %v", err)
+			zlog.Error("err: %v", err)
 			return 0
 		}
 		prefix = prefix*1000 + int64(num)
@@ -142,54 +142,12 @@ func GetId(ip string, port int) int64 {
 
 func ReadIps(path string) []string {
 
-	Info("read %s", path)
+	zlog.Info("read %s", path)
 	data, err := ioutil.ReadFile(path)
 	if err != nil {
-		Error("err: %v", err)
+		zlog.Error("err: %v", err)
 	}
 
 	ips := strings.Split(string(data), "\n")
 	return ips
-}
-
-type LogLevel int
-
-const (
-	DebugLevel LogLevel = iota
-	InfoLevel
-	WarnLevel
-	ErrorLevel
-)
-
-const KLevel = InfoLevel
-
-func init() {
-	log.SetFlags(log.Lshortfile)
-}
-
-func Debug(format string, v ...interface{}) {
-	if KLevel > DebugLevel {
-		return
-	}
-	log.Output(2, fmt.Sprintf("Debug| "+format, v...))
-}
-
-func Info(format string, v ...interface{}) {
-	if KLevel > InfoLevel {
-		return
-	}
-	log.Output(2, fmt.Sprintf("\033[32m"+"INFO| "+format+"\033[0m", v...))
-}
-
-func Warn(format string, v ...interface{}) {
-	if KLevel > WarnLevel {
-		return
-	}
-	log.Output(2, fmt.Sprintf("\033[33m"+"WARN| "+format+"\033[0m", v...))
-}
-
-func Error(format string, v ...interface{}) {
-	s := fmt.Sprintf("\033[31m"+"ERROR| "+format+"\033[0m", v...)
-	log.Output(2, s)
-	panic(s)
 }

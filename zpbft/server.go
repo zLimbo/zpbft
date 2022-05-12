@@ -1,453 +1,150 @@
 package main
 
 import (
+	"io/ioutil"
+	"net/http"
 	"net/rpc"
 	"sync"
-	"sync/atomic"
 	"time"
+	"zpbft/zlog"
 )
 
+type Peer struct {
+	id     int32
+	addr   string
+	pubkey []byte
+	rpcCli *rpc.Client
+}
+
 type Server struct {
-	node      *Node
-	seqCh     chan int64
-	logs      []*Log
-	seq2cert  map[int64]*LogCert
-	id2srvRpc map[int64]*rpc.Client
-	id2cliRpc map[int64]*rpc.Client
-	mu        sync.Mutex
-	seqInc    int64
-	view      int64
-	coch      chan interface{}
+	mu          sync.Mutex
+	f           int
+	id          int32
+	addr        string
+	prikey      []byte
+	pubkey      []byte
+	maddr       string
+	peers       map[int32]*Peer
+	leader      int32
+	view        int32
+	maxSeq      int64
+	seqCh       chan int64
+	commitSeqCh chan int64
+	seq2cert    map[int64]*LogCert
 }
 
-func (s *Server) assignSeq() int64 {
-	// 后8位为节点id
-	return atomic.AddInt64(&s.seqInc, 1e10)
+func RunServer(maddr, saddr, pri, pub string) {
+
+	prikey, pubkey := readKeyPair(pri, pub)
+	s := &Server{
+		addr:        saddr,
+		prikey:      prikey,
+		pubkey:      pubkey,
+		maddr:       maddr,
+		peers:       map[int32]*Peer{},
+		seqCh:       make(chan int64),
+		commitSeqCh: make(chan int64),
+		seq2cert:    make(map[int64]*LogCert),
+	}
+
+	// 开启rpc服务
+	s.server()
+
+	// 注册节点信息，并获取其他节点信息
+	s.register()
+
+	// 并行建立连接
+	s.connectPeers()
+
+	// 进行pbft服务
+	s.pbft()
 }
 
-func (s *Server) getCertOrNew(seq int64) *LogCert {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	cert, ok := s.seq2cert[seq]
-	if !ok {
-		cert = &LogCert{
-			seq:      seq,
-			prepares: make(map[int64]*PrepareArgs),
-			commits:  make(map[int64]*CommitArgs),
-			prepareQ: make([]*PrepareArgs, 0),
-			commitQ:  make([]*CommitArgs, 0),
-		}
-		s.seq2cert[seq] = cert
-	}
-	return cert
-}
-
-func (s *Server) cleanCert(seq int64) {
-	cert := s.getCertOrNew(seq)
-	cert.clear()
-}
-
-func (s *Server) RequestRpc(args *RequestArgs, reply *RequestReply) error {
-	// 放入请求队列直接返回，后续异步通知客户端
-
-	Debug("RequestRpc, from: %d", args.Req.ClientId)
-
-	// 验证RequestMsg
-	node := GetNode(args.Req.ClientId)
-	digest := Sha256Digest(args.Req)
-	ok := RsaVerifyWithSha256(digest, args.Sign, node.pubKey)
-	if !ok {
-		Warn("RequestMsg verify error, from: %d", args.Req.ClientId)
-		reply.Ok = false
-		return nil
-	}
-
-	// leader 分配seq
-	seq := s.assignSeq()
-	s.getCertOrNew(seq).set(args, digest, s.view)
-	s.seqCh <- seq
-
-	// 返回信息
-	reply.Seq = seq
-	reply.Ok = true
-
-	return nil
-}
-
-func (s *Server) PrePrepare(seq int64) {
-	req, digest, view := s.getCertOrNew(seq).get()
-	msg := &PrePrepareMsg{
-		View:   view,
-		Seq:    seq,
-		Digest: digest,
-		NodeId: s.node.id,
-	}
-	digest = Sha256Digest(msg)
-	sign := RsaSignWithSha256(digest, s.node.priKey)
-	// 配置rpc参数
-	args := &PrePrepareArgs{
-		Msg:     msg,
-		Sign:    sign,
-		ReqArgs: req,
-	}
-
-	// 等待发完2f个节点再进入下一阶段
-	for id, srvCli := range s.id2srvRpc {
-		id1, srvCli1 := id, srvCli
-		go func() { // 异步发送
-			var reply bool
-			err := srvCli1.Call("Server.PrePrepareRpc", args, &reply)
-			if err != nil {
-				Error("Server.PrePrepareRpc %d error: %v", id1, err)
-			}
-		}()
-	}
-	Debug("PrePrepare %d ok", seq)
-	s.Prepare(seq)
-}
-
-func (s *Server) PrePrepareRpc(args *PrePrepareArgs, reply *bool) error {
-	msg := args.Msg
-	Debug("PrePrepareRpc, seq: %d, from: %d", msg.Seq, msg.NodeId)
-	// 预设返回失败
-	*reply = false
-
-	// 验证PrePrepareMsg
-	node := GetNode(msg.NodeId)
-	digest := Sha256Digest(msg)
-	ok := RsaVerifyWithSha256(digest, args.Sign, node.pubKey)
-	if !ok {
-		Warn("PrePrepareMsg verify error, seq: %d, from: %d", msg.Seq, msg.NodeId)
-		return nil
-	}
-
-	// 验证RequestMsg
-	reqArgs := args.ReqArgs
-	node = GetNode(reqArgs.Req.ClientId)
-	digest = Sha256Digest(reqArgs.Req)
-	if !SliceEqual(digest, msg.Digest) {
-		Warn("PrePrepareMsg error, req.digest != msg.Digest")
-		return nil
-	}
-	ok = RsaVerifyWithSha256(digest, reqArgs.Sign, node.pubKey)
-	if !ok {
-		Warn("RequestMsg verify error, seq: %d, from: %d", msg.Seq, msg.NodeId)
-		return nil
-	}
-
-	// 设置证明
-	cert := s.getCertOrNew(msg.Seq)
-	cert.set(reqArgs, digest, msg.View)
-
-	// 进入Prepare投票
-	go s.Prepare(cert.seq)
-
-	// 计票
-	s.verifyBallot(cert)
-
-	// 返回成功
-	*reply = true
-	return nil
-}
-
-func (s *Server) Prepare(seq int64) {
-	_, digest, view := s.getCertOrNew(seq).get()
-	msg := &PrepareMsg{
-		View:   view,
-		Seq:    seq,
-		Digest: digest,
-		NodeId: s.node.id,
-	}
-	digest = Sha256Digest(msg)
-	sign := RsaSignWithSha256(digest, s.node.priKey)
-	// 配置rpc参数,相比PrePrepare无需req
-	args := &PrepareArgs{
-		Msg:  msg,
-		Sign: sign,
-	}
-	for id, srvCli := range s.id2srvRpc {
-		id1, srvCli1 := id, srvCli
-		go func() { // 异步发送
-			var reply bool
-			err := srvCli1.Call("Server.PrepareRpc", args, &reply)
-			if err != nil {
-				Error("Server.PrepareRpc %d error: %v", id1, err)
-			}
-		}()
-	}
-}
-
-func (s *Server) PrepareRpc(args *PrepareArgs, reply *bool) error {
-	msg := args.Msg
-	Debug("PrepareRpc, seq: %d, from: %d", msg.Seq, msg.NodeId)
-
-	// 这里先不验证，因为可能 req 消息还未收到，先存下投票信息后期验证
-	cert := s.getCertOrNew(msg.Seq)
-	cert.pushPrepare(args)
-	s.verifyBallot(cert)
-
-	*reply = true
-	return nil
-}
-
-func (s *Server) Commit(seq int64) {
-	// cmd := s.getCertOrNew(seq).getCmd() // req一定存在
-	_, digest, view := s.getCertOrNew(seq).get()
-	msg := &CommitMsg{
-		View:   view,
-		Seq:    seq,
-		Digest: digest,
-		NodeId: s.node.id,
-	}
-	digest = Sha256Digest(msg)
-	sign := RsaSignWithSha256(digest, s.node.priKey)
-	// 配置rpc参数,相比PrePrepare无需req
-	args := &CommitArgs{
-		Msg:  msg,
-		Sign: sign,
-	}
-	for id, srvCli := range s.id2srvRpc {
-		id1, srvCli1 := id, srvCli
-		go func() { // 异步发送
-			var reply bool
-			err := srvCli1.Call("Server.CommitRpc", args, &reply)
-			if err != nil {
-				Error("Server.CommitRpc %d error: %v", id1, err)
-			}
-		}()
-	}
-}
-
-func (s *Server) CommitRpc(args *CommitArgs, reply *bool) error {
-	msg := args.Msg
-	Debug("CommitRpc, seq: %d, from: %d", msg.Seq, msg.NodeId)
-
-	// 这里先不验证，因为可能 req 消息还未收到，先存下投票信息后期验证
-	cert := s.getCertOrNew(msg.Seq)
-	cert.pushCommit(args)
-	s.verifyBallot(cert)
-
-	*reply = true
-	return nil
-}
-
-func (s *Server) verifyBallot(cert *LogCert) {
-	req, reqDigest, view := cert.get()
-
-	// cmd 为空则不进行后续阶段
-	if req == nil {
-		Debug("march, cmd is nil")
-		return
-	}
-	// Debug("march, seq: %d, prepare: %d, commit: %d, stage: %d",
-	// 	cert.seq, cert.prepareBallot(), cert.commitBallot(), cert.getStage())
-
-	switch cert.getStage() {
-	case PrepareStage:
-		argsQ := cert.popAllPrepares()
-		for _, args := range argsQ {
-			msg := args.Msg
-			if cert.prepareVoted(msg.NodeId) { // 已投票
-				continue
-			}
-			if view != msg.View {
-				Warn("PrepareMsg error, view(%d) != msg.View(%d)", view, msg.View)
-				continue
-			}
-			if !SliceEqual(reqDigest, msg.Digest) {
-				Warn("PrePrepareMsg error, req.digest != msg.Digest")
-				continue
-			}
-			// 验证PrepareMsg
-			node := GetNode(msg.NodeId)
-			digest := Sha256Digest(msg)
-			ok := RsaVerifyWithSha256(digest, args.Sign, node.pubKey)
-			if !ok {
-				Warn("PrepareMsg verify error, seq: %d, from: %d", msg.Seq, msg.NodeId)
-				continue
-			}
-			cert.prepareVote(args)
-		}
-		// 2f + 1 (包括自身) 后进入 commit 阶段
-		if cert.prepareBallot() >= 2*KConfig.FalultNum {
-			cert.setStage(CommitStage)
-			go s.Commit(cert.seq)
-		} else {
-			break
-		}
-		fallthrough // 进入后续判断
-	case CommitStage:
-		argsQ := cert.popAllCommits()
-		for _, args := range argsQ {
-			msg := args.Msg
-			if cert.commitVoted(msg.NodeId) { // 已投票
-				continue
-			}
-			if view != msg.View {
-				Warn("PrepareMsg error, view(%d) != msg.View(%d)", view, msg.View)
-				continue
-			}
-			if !SliceEqual(reqDigest, msg.Digest) {
-				Warn("PrePrepareMsg error, req.digest != msg.Digest")
-				continue
-			}
-			// 验证PrepareMsg
-			node := GetNode(msg.NodeId)
-			digest := Sha256Digest(msg)
-			ok := RsaVerifyWithSha256(digest, args.Sign, node.pubKey)
-			if !ok {
-				Warn("PrepareMsg verify error, seq: %d, from: %d", msg.Seq, msg.NodeId)
-				continue
-			}
-			cert.commitVote(args)
-		}
-		// 2f + 1 (包括自身) 后进入 reply 阶段
-		if cert.commitBallot() >= 2*KConfig.FalultNum {
-			cert.setStage(ReplyStage)
-			go s.Reply(cert.seq)
-		}
-	}
-}
-
-func (s *Server) Reply(seq int64) {
-	Debug("Reply %d", seq)
-	req, _, view := s.getCertOrNew(seq).get()
-	msg := &ReplyMsg{
-		View:      view,
-		Seq:       seq,
-		Timestamp: time.Now().UnixNano(),
-		ClientId:  req.Req.ClientId,
-		NodeId:    s.node.id,
-		// Result:    req.Req.Operator,
-	}
-	digest := Sha256Digest(msg)
-	sign := RsaSignWithSha256(digest, s.node.priKey)
-	replyArgs := &ReplyArgs{
-		Msg:  msg,
-		Sign: sign,
-	}
-	var reply bool
-	cliCli := s.getCliCli(req.Req.ClientId)
-	if cliCli == nil {
-		Warn("can't connect client %d", req.Req.ClientId)
-		return
-	}
-	err := cliCli.Call("Client.ReplyRpc", replyArgs, &reply)
-	if err != nil {
-		Warn("Client.ReplyRpc error: %v", err)
-		s.closeCliCli(req.Req.ClientId)
-	}
-	s.cleanCert(seq)
-	s.coch <- 1
-}
-
-func (s *Server) getCliCli(clientId int64) *rpc.Client {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	cliCli, ok := s.id2cliRpc[clientId]
-	if !ok || cliCli == nil {
-		node := GetNode(clientId)
-		var err error
-		cliCli, err = rpc.DialHTTP("tcp", node.addr)
+func (s *Server) server() {
+	// 放入协程防止阻塞后面函数
+	go func() {
+		rpc.Register(s)
+		rpc.HandleHTTP()
+		err := http.ListenAndServe(s.addr, nil)
 		if err != nil {
-			Warn("connect client %d error: %v", node.addr, err)
-			return nil
+			zlog.Error("http.ListenAndServe failed, err:%v", err)
 		}
-		s.id2cliRpc[clientId] = cliCli
-	}
-	return cliCli
+	}()
 }
 
-func (s *Server) closeCliCli(clientId int64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	Info("close connect with client %d", clientId)
-	cliCli, ok := s.id2cliRpc[clientId]
-	if ok && cliCli != nil {
-		cliCli = nil
-		delete(s.id2cliRpc, clientId)
-	}
-}
-
-func (s *Server) CloseCliCliRPC(args *CloseCliCliArgs, reply *bool) error {
-	s.closeCliCli(args.ClientId)
-	*reply = true
-	return nil
-}
-
-func (s *Server) connect() {
-	ok := false
-	for !ok {
-		time.Sleep(time.Second) // 每隔一秒进行连接
-		Info("build connect...")
-		ok = true
-		for id, node := range KConfig.Id2Node {
-			if node == s.node {
-				continue
-			}
-			if s.id2srvRpc[id] == nil {
-				cli, err := rpc.DialHTTP("tcp", node.addr)
-				if err != nil {
-					Warn("connect %s error: %v", node.addr, err)
-					ok = false
-				} else {
-					s.id2srvRpc[id] = cli
-				}
-
-			}
-		}
-	}
-	Info("== connect success ==")
-}
-
-func (s *Server) workLoop() {
-	Info("== start work loop ==")
-
-	for seq := range s.seqCh {
-		s.PrePrepare(seq)
-		<-s.coch
-	}
-}
-
-func (s *Server) Start() {
-	s.connect()
-	s.workLoop()
-}
-
-// func RunServer(id int64) {
-// 	server := &Server{
-// 		node:      KConfig.Id2Node[id],
-// 		seqCh:     make(chan int64, ChanSize),
-// 		logs:      make([]*Log, 0),
-// 		seq2cert:  make(map[int64]*LogCert),
-// 		id2srvRpc: make(map[int64]*rpc.Client),
-// 		id2cliRpc: make(map[int64]*rpc.Client),
-// 		coch:      make(chan interface{}, 1),
-// 	}
-// 	// 每个分配序号后缀为节点id(8位)
-// 	server.seqInc = server.node.id
-// 	// 当前暂无view-change, view暂且设置为server id
-// 	server.view = server.node.id
-
-// 	go server.Start()
-
-// 	rpc.Register(server)
-// 	rpc.HandleHTTP()
-// 	if err := http.ListenAndServe(server.node.addr, nil); err != nil {
-// 		log.Fatal("server error: ", err)
-// 	}
-// }
-
-func RunServer(mhost, host, pri, pub string) {
-	cli, err := rpc.DialHTTP("tcp", mhost)
+func (s *Server) register() {
+	zlog.Info("connect master ...")
+	rpcCli, err := rpc.DialHTTP("tcp", s.maddr)
 	if err != nil {
-		Error("err:%v", err)
+		zlog.Error("rpc.DialHTTP failed, err:%v", err)
 	}
+
 	args := &RegisterArgs{
-		Host: host,
+		Addr:   s.addr,
+		Pubkey: s.pubkey,
 	}
 	reply := &RegisterReply{}
-	cli.Call("Master.RegisterRpc", args, reply)
 
-	Info("args:%v, reply:%v", args, reply)
+	zlog.Info("register peer info ...")
+	rpcCli.Call("Master.RegisterRpc", args, reply)
+
+	// 重复addr注册或超过 PeerNum 限定节点数，注册失败
+	if !reply.Ok {
+		zlog.Error("register failed")
+	}
+
+	// 设置节点信息
+	for i := range reply.Addrs {
+		if reply.Addrs[i] == s.addr {
+			continue
+		}
+		s.peers[int32(i)] = &Peer{
+			id:     int32(i),
+			addr:   reply.Addrs[i],
+			pubkey: reply.Pubkeys[i],
+		}
+	}
+
+	// n = 3f + 1
+	s.f = (len(s.peers) - 1) / 3
+	s.leader = 0
+}
+
+func (s *Server) connectPeers() {
+	zlog.Info("build connect with other peers ...")
+	wg := sync.WaitGroup{}
+	wg.Add(len(s.peers))
+	for _, peer := range s.peers {
+		p := peer
+		go func() {
+			// 每隔1s请求建立连接，10s未连接则报错
+			t0 := time.Now()
+			for time.Since(t0).Seconds() < 10 {
+				rpcCli, err := rpc.DialHTTP("tcp", p.addr)
+				if err == nil {
+					zlog.Debug("dial (id=%d,addr=%s) success", p.id, p.addr)
+					p.rpcCli = rpcCli
+					wg.Done()
+					return
+				}
+				zlog.Warn("dial (id=%d,addr=%s) error, err:%v", p.id, p.addr, err)
+				time.Sleep(time.Second)
+			}
+			zlog.Error("connect (id=%d,addr=%s) failed, terminate", p.id, p.addr)
+		}()
+	}
+	wg.Wait()
+	zlog.Info("==== connect all peers success ====")
+}
+
+func readKeyPair(pri, pub string) ([]byte, []byte) {
+	prikey, err := ioutil.ReadFile(pri)
+	if err != nil {
+		zlog.Error("ioutil.ReadFile(pri) filed, err:%v", err)
+	}
+	pubkey, err := ioutil.ReadFile(pub)
+	if err != nil {
+		zlog.Error("ioutil.ReadFile(pub) filed, err:%v", err)
+	}
+	return prikey, pubkey
 }

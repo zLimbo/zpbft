@@ -3,7 +3,6 @@ package main
 import (
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 type Log struct {
@@ -18,35 +17,27 @@ const (
 	ReplyStage
 )
 
-type CmdCert struct {
-	cliId int
-	seq    int64
-	digest []byte
-	start  time.Time
-	replys map[int64][]byte
-}
-
 type LogCert struct {
-	seq      int64
-	view     int64
-	req      *RequestArgs
-	digest   []byte
-	prepares map[int64]*PrepareArgs
-	commits  map[int64]*CommitArgs
-	prepareQ []*PrepareArgs
-	commitQ  []*CommitArgs
-	stage    Stage
-	mu       sync.Mutex
+	mu         sync.Mutex
+	seq        int64
+	view       int32
+	req        *RequestArgs
+	digest     []byte
+	id2prepare map[int32]*PrepareArgs
+	id2commit  map[int32]*CommitArgs
+	prepareWQ  []*PrepareArgs
+	commitWQ   []*CommitArgs
+	stage      Stage
 }
 
-func (lc *LogCert) set(req *RequestArgs, digest []byte, view int64) {
+func (lc *LogCert) set(req *RequestArgs, digest []byte, view int32) {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
 	lc.req = req
 	lc.digest = digest
 }
 
-func (lc *LogCert) get() (*RequestArgs, []byte, int64) {
+func (lc *LogCert) get() (*RequestArgs, []byte, int32) {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
 	return lc.req, lc.digest, lc.view
@@ -55,28 +46,28 @@ func (lc *LogCert) get() (*RequestArgs, []byte, int64) {
 func (lc *LogCert) pushPrepare(args *PrepareArgs) {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
-	lc.prepareQ = append(lc.prepareQ, args)
+	lc.prepareWQ = append(lc.prepareWQ, args)
 }
 
 func (lc *LogCert) pushCommit(args *CommitArgs) {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
-	lc.commitQ = append(lc.commitQ, args)
+	lc.commitWQ = append(lc.commitWQ, args)
 }
 
 func (lc *LogCert) popAllPrepares() []*PrepareArgs {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
-	argsQ := lc.prepareQ
-	lc.prepareQ = nil
+	argsQ := lc.prepareWQ
+	lc.prepareWQ = nil
 	return argsQ
 }
 
 func (lc *LogCert) popAllCommits() []*CommitArgs {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
-	argsQ := lc.commitQ
-	lc.commitQ = nil
+	argsQ := lc.commitWQ
+	lc.commitWQ = nil
 	return argsQ
 }
 
@@ -88,84 +79,78 @@ func (lc *LogCert) setStage(stage Stage) {
 	atomic.StoreInt32(&lc.stage, stage)
 }
 
-func (lc *LogCert) prepareVoted(nodeId int64) bool {
+func (lc *LogCert) prepareVoted(PeerId int32) bool {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
-	_, ok := lc.prepares[nodeId]
+	_, ok := lc.id2prepare[PeerId]
 	return ok
 }
 
-func (lc *LogCert) commitVoted(nodeId int64) bool {
+func (lc *LogCert) commitVoted(PeerId int32) bool {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
-	_, ok := lc.commits[nodeId]
+	_, ok := lc.id2commit[PeerId]
 	return ok
 }
 
 func (lc *LogCert) prepareVote(args *PrepareArgs) {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
-	lc.prepares[args.Msg.NodeId] = args
+	lc.id2prepare[args.Msg.PeerId] = args
 }
 
 func (lc *LogCert) commitVote(args *CommitArgs) {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
-	lc.commits[args.Msg.NodeId] = args
+	lc.id2commit[args.Msg.PeerId] = args
 }
 
 func (lc *LogCert) prepareBallot() int {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
-	return len(lc.prepares)
+	return len(lc.id2prepare)
 }
 
 func (lc *LogCert) commitBallot() int {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
-	return len(lc.commits)
-}
-
-func (lc *LogCert) clear() {
-	lc.mu.Lock()
-	defer lc.mu.Unlock()
-	lc.req.Req.Operator = nil
+	return len(lc.id2commit)
 }
 
 type RequestMsg struct {
-	Operator  []byte
-	Timestamp int64
-	ClientId  int64
+	ClientAddr string
+	Timestamp  int64
+	Command    interface{}
 }
 
 type PrePrepareMsg struct {
-	View   int64
+	PeerId int32
+	View   int32
 	Seq    int64
 	Digest []byte
-	NodeId int64
 }
 
 type PrepareMsg struct {
-	View   int64
+	PeerId int32
+	View   int32
 	Seq    int64
 	Digest []byte
-	NodeId int64
 }
 
 type CommitMsg struct {
-	View   int64
+	PeerId int32
+	View   int32
 	Seq    int64
 	Digest []byte
-	NodeId int64
 }
 
 type ReplyMsg struct {
-	View      int64
-	Seq       int64
-	Timestamp int64
-	ClientId  int64
-	NodeId    int64
-	Result    []byte
+	PeerId     int32
+	View       int32
+	Seq        int64
+	Timestamp  int64
+	ClientAddr string
+	Result     interface{}
 }
 
 type RequestArgs struct {
@@ -197,8 +182,4 @@ type CommitArgs struct {
 type ReplyArgs struct {
 	Msg  *ReplyMsg
 	Sign []byte
-}
-
-type CloseCliCliArgs struct {
-	ClientId int64
 }
