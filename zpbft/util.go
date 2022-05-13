@@ -1,4 +1,4 @@
-package main
+package zpbft
 
 import (
 	"math"
@@ -7,6 +7,21 @@ import (
 	"time"
 	"zpbft/zlog"
 )
+
+func SliceEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	if (a == nil) != (b == nil) {
+		return false
+	}
+	for i, v := range a {
+		if v != b[i] {
+			return false
+		}
+	}
+	return true
+}
 
 func I2Bytes(num int64, len int) []byte {
 	result := make([]byte, len)
@@ -47,19 +62,4 @@ func GetLocalIp() string {
 
 func ToSecond(td time.Duration) float64 {
 	return float64(td.Nanoseconds()) / math.Pow10(9)
-}
-
-func SliceEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	if (a == nil) != (b == nil) {
-		return false
-	}
-	for i, v := range a {
-		if v != b[i] {
-			return false
-		}
-	}
-	return true
 }

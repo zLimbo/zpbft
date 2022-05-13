@@ -1,4 +1,4 @@
-package main
+package zpbft
 
 import (
 	"crypto"
@@ -11,11 +11,11 @@ import (
 	"zpbft/zlog"
 )
 
-func RsaSignWithSha256(data []byte, keyBytes []byte) []byte {
+func Sign(msg []byte, prikey []byte) []byte {
 	h := sha256.New()
-	h.Write(data)
+	h.Write(msg)
 	hashed := h.Sum(nil)
-	block, _ := pem.Decode(keyBytes)
+	block, _ := pem.Decode(prikey)
 	if block == nil {
 		zlog.Error("private key error")
 	}
@@ -32,8 +32,8 @@ func RsaSignWithSha256(data []byte, keyBytes []byte) []byte {
 	return signature
 }
 
-func RsaVerifyWithSha256(data, sign, keyBytes []byte) bool {
-	block, _ := pem.Decode(keyBytes)
+func Verify(msg, signature, pubkey []byte) bool {
+	block, _ := pem.Decode(pubkey)
 	if block == nil {
 		zlog.Warn("public key error")
 		return false
@@ -44,8 +44,8 @@ func RsaVerifyWithSha256(data, sign, keyBytes []byte) bool {
 		return false
 	}
 
-	hashed := sha256.Sum256(data)
-	err = rsa.VerifyPKCS1v15(pubKey.(*rsa.PublicKey), crypto.SHA256, hashed[:], sign)
+	hashed := sha256.Sum256(msg)
+	err = rsa.VerifyPKCS1v15(pubKey.(*rsa.PublicKey), crypto.SHA256, hashed[:], signature)
 	if err != nil {
 		zlog.Warn("rsa.VerifyPKCS1v15(...), err: %v", err)
 		return false
@@ -53,7 +53,7 @@ func RsaVerifyWithSha256(data, sign, keyBytes []byte) bool {
 	return true
 }
 
-func Sha256Digest(msg interface{}) []byte {
+func Digest(msg interface{}) []byte {
 
 	msgBytes := JsonMarshal(msg)
 

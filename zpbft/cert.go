@@ -1,4 +1,4 @@
-package main
+package zpbft
 
 import (
 	"sync"
@@ -120,7 +120,7 @@ func (lc *LogCert) commitBallot() int {
 type RequestMsg struct {
 	ClientAddr string
 	Timestamp  int64
-	Command    interface{}
+	Command    string
 }
 
 type PrePrepareMsg struct {
@@ -150,7 +150,7 @@ type ReplyMsg struct {
 	Seq        int64
 	Timestamp  int64
 	ClientAddr string
-	Result     interface{}
+	Result     string
 }
 
 type RequestArgs struct {
@@ -169,9 +169,17 @@ type PrePrepareArgs struct {
 	ReqArgs *RequestArgs
 }
 
+type PrePrepareReply struct {
+	Ok bool
+}
+
 type PrepareArgs struct {
 	Msg  *PrepareMsg
 	Sign []byte
+}
+
+type PrepareReply struct {
+	Ok bool
 }
 
 type CommitArgs struct {
@@ -179,7 +187,15 @@ type CommitArgs struct {
 	Sign []byte
 }
 
+type CommitReply struct {
+	Ok bool
+}
+
 type ReplyArgs struct {
 	Msg  *ReplyMsg
 	Sign []byte
+}
+
+type ReplyReply struct {
+	Ok bool
 }

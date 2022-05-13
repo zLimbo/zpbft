@@ -1,4 +1,4 @@
-package main
+package zpbft
 
 import (
 	"net/http"
@@ -29,7 +29,7 @@ func RunMaster(maddr string, f int) {
 	rpc.HandleHTTP()
 	err := http.ListenAndServe(maddr, nil)
 	if err != nil {
-		zlog.Error("http.ListenAndServe failed, err:%v", err)
+		zlog.Error("http.ListenAndServe failed, %v", err)
 	}
 }
 
@@ -89,6 +89,7 @@ func (m *Master) RegisterRpc(args *RegisterArgs, reply *RegisterReply) error {
 
 type GetPeersArgs struct {
 	// empty
+	Addr string
 }
 
 type GetPeersReply struct {
@@ -98,6 +99,7 @@ type GetPeersReply struct {
 
 // 客户端获取节点信息
 func (m *Master) GetPeersRpc(args *GetPeersArgs, reply *GetPeersReply) error {
+	zlog.Info("new client addr: %s", args.Addr)
 	// 如果注册节点未达到要求，则阻塞
 	m.cond.L.Lock()
 	for len(m.addrs) < m.peerNum {

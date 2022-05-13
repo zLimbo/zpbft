@@ -1,11 +1,14 @@
-package main
+package zpbft
 
 import (
+	"fmt"
 	"io/ioutil"
 	"net/http"
 	"net/rpc"
 	"sync"
+	"sync/atomic"
 	"time"
+	"zpbft/zkv"
 	"zpbft/zlog"
 )
 
@@ -31,6 +34,7 @@ type Server struct {
 	seqCh       chan int64
 	commitSeqCh chan int64
 	seq2cert    map[int64]*LogCert
+	zkv         *zkv.ZKV
 }
 
 func RunServer(maddr, saddr, pri, pub string) {
@@ -42,9 +46,10 @@ func RunServer(maddr, saddr, pri, pub string) {
 		pubkey:      pubkey,
 		maddr:       maddr,
 		peers:       map[int32]*Peer{},
-		seqCh:       make(chan int64),
-		commitSeqCh: make(chan int64),
+		seqCh:       make(chan int64, 100),
+		commitSeqCh: make(chan int64, 100),
 		seq2cert:    make(map[int64]*LogCert),
+		zkv:         zkv.NewZKV(),
 	}
 
 	// 开启rpc服务
@@ -73,6 +78,7 @@ func (s *Server) server() {
 }
 
 func (s *Server) register() {
+	time.Sleep(500 * time.Millisecond)
 	zlog.Info("connect master ...")
 	rpcCli, err := rpc.DialHTTP("tcp", s.maddr)
 	if err != nil {
@@ -96,6 +102,7 @@ func (s *Server) register() {
 	// 设置节点信息
 	for i := range reply.Addrs {
 		if reply.Addrs[i] == s.addr {
+			s.id = int32(i)
 			continue
 		}
 		s.peers[int32(i)] = &Peer{
@@ -106,7 +113,7 @@ func (s *Server) register() {
 	}
 
 	// n = 3f + 1
-	s.f = (len(s.peers) - 1) / 3
+	s.f = (len(reply.Addrs) - 1) / 3
 	s.leader = 0
 }
 
@@ -147,4 +154,368 @@ func readKeyPair(pri, pub string) ([]byte, []byte) {
 		zlog.Error("ioutil.ReadFile(pub) filed, err:%v", err)
 	}
 	return prikey, pubkey
+}
+
+func (s *Server) RequestRpc(args *RequestArgs, reply *RequestReply) error {
+
+	// 如果不是leader，将请求转发至leader
+	if s.leader != s.id {
+		return s.peers[s.leader].rpcCli.Call("Server.RequestRpc", args, reply)
+	}
+
+	// leader 放入请求队列直接返回，后续异步通知客户端
+	zlog.Info("req from: %s", args.Req.ClientAddr)
+
+	// 客户端的请求暂不验证
+
+	// leader 分配seq
+	seq := s.assignSeq()
+	digest := Digest(args.Req)
+	s.getCertOrNew(seq).set(args, digest, s.view)
+
+	go func() {
+		// 使用协程：因为通道会阻塞
+		s.seqCh <- seq
+	}()
+
+	// 返回信息
+	reply.Seq = seq
+	reply.Ok = true
+
+	return nil
+}
+
+func (s *Server) assignSeq() int64 {
+	// 后8位为节点id
+	return atomic.AddInt64(&s.maxSeq, 1)
+}
+
+func (s *Server) getCertOrNew(seq int64) *LogCert {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cert, ok := s.seq2cert[seq]
+	if !ok {
+		cert = &LogCert{
+			seq:        seq,
+			id2prepare: make(map[int32]*PrepareArgs),
+			id2commit:  make(map[int32]*CommitArgs),
+			prepareWQ:  make([]*PrepareArgs, 0),
+			commitWQ:   make([]*CommitArgs, 0),
+		}
+		s.seq2cert[seq] = cert
+	}
+	return cert
+}
+
+func (s *Server) PrePrepare(seq int64) {
+	zlog.Debug("PrePrepare %d", seq)
+	req, digest, view := s.getCertOrNew(seq).get()
+	msg := &PrePrepareMsg{
+		View:   view,
+		Seq:    seq,
+		Digest: digest,
+		PeerId: s.id,
+	}
+	digest = Digest(msg)
+	sign := Sign(digest, s.prikey)
+	// 配置rpc参数
+	args := &PrePrepareArgs{
+		Msg:     msg,
+		Sign:    sign,
+		ReqArgs: req,
+	}
+
+	// pre-prepare广播
+	count := int32(0)
+	for _, peer := range s.peers {
+		// 异步发送
+		p := peer
+		go func() {
+			reply := &PrePrepareReply{}
+			err := p.rpcCli.Call("Server.PrePrepareRpc", args, reply)
+			if err != nil {
+				zlog.Warn("Server.PrePrepareRpc %d error: %v", p.id, err)
+			}
+			// 等待发完2f个节点再进入下一阶段
+
+			if atomic.AddInt32(&count, 1) == 2*int32(s.f) {
+				zlog.Debug("PrePrepare %d ok", seq)
+				s.Prepare(seq)
+			}
+		}()
+	}
+
+}
+
+func (s *Server) PrePrepareRpc(args *PrePrepareArgs, reply *PrePrepareReply) error {
+	msg := args.Msg
+	zlog.Debug("PrePrepareRpc, seq: %d, from: %d", msg.Seq, msg.PeerId)
+	// 预设返回失败
+	reply.Ok = false
+
+	// 验证PrePrepareMsg
+	peer := s.peers[args.Msg.PeerId]
+	digest := Digest(msg)
+	ok := Verify(digest, args.Sign, peer.pubkey)
+	if !ok {
+		zlog.Warn("PrePrepareMsg verify error, seq: %d, from: %d", msg.Seq, msg.PeerId)
+		return nil
+	}
+
+	// 验证RequestMsg
+	reqArgs := args.ReqArgs
+	digest = Digest(reqArgs.Req)
+	if !SliceEqual(digest, msg.Digest) {
+		zlog.Warn("PrePrepareMsg error, req.digest != msg.Digest")
+		return nil
+	}
+	// ok = RsaVerifyWithSha256(digest, reqArgs.Sign, peer.pubkey)
+	// if !ok {
+	// 	zlog.Warn("RequestMsg verify error, seq: %d, from: %d", msg.Seq, msg.PeerId)
+	// 	return nil
+	// }
+
+	// 设置证明
+	cert := s.getCertOrNew(msg.Seq)
+	cert.set(reqArgs, digest, msg.View)
+
+	// 进入Prepare投票
+	go s.Prepare(cert.seq)
+
+	// 尝试计票
+	go s.verifyBallot(cert)
+
+	// 返回成功
+	reply.Ok = true
+
+	return nil
+}
+
+func (s *Server) Prepare(seq int64) {
+	zlog.Debug("Prepare %d", seq)
+	_, digest, view := s.getCertOrNew(seq).get()
+	msg := &PrepareMsg{
+		View:   view,
+		Seq:    seq,
+		Digest: digest,
+		PeerId: s.id,
+	}
+	// 配置rpc参数,相比PrePrepare无需req
+	args := &PrepareArgs{
+		Msg:  msg,
+		Sign: Sign(Digest(msg), s.prikey),
+	}
+	// prepare广播
+	for _, peer := range s.peers {
+		// 异步发送
+		p := peer
+		go func() {
+			reply := &PrepareReply{}
+			err := p.rpcCli.Call("Server.PrepareRpc", args, reply)
+			if err != nil {
+				zlog.Warn("Server.PrePrepareRpc %d error: %v", p.id, err)
+			}
+		}()
+	}
+}
+
+func (s *Server) PrepareRpc(args *PrepareArgs, reply *PrepareReply) error {
+	msg := args.Msg
+	zlog.Debug("PrepareRpc, seq: %d, from: %d", msg.Seq, msg.PeerId)
+
+	// 这里先不验证，因为可能 req 消息还未收到，先存下投票信息后期验证
+	cert := s.getCertOrNew(msg.Seq)
+	cert.pushPrepare(args)
+
+	// 尝试计票
+	go s.verifyBallot(cert)
+
+	reply.Ok = true
+	return nil
+}
+
+func (s *Server) Commit(seq int64) {
+	zlog.Debug("Commit %d", seq)
+	_, digest, view := s.getCertOrNew(seq).get()
+	msg := &CommitMsg{
+		View:   view,
+		Seq:    seq,
+		Digest: digest,
+		PeerId: s.id,
+	}
+	// 配置rpc参数,相比PrePrepare无需req
+	args := &CommitArgs{
+		Msg:  msg,
+		Sign: Sign(Digest(msg), s.prikey),
+	}
+	// commit广播
+	for _, peer := range s.peers {
+		// 异步发送
+		p := peer
+		go func() {
+			reply := &CommitReply{}
+			err := p.rpcCli.Call("Server.CommitRpc", args, reply)
+			if err != nil {
+				zlog.Warn("Server.PrePrepareRpc %d error: %v", p.id, err)
+			}
+		}()
+	}
+}
+
+func (s *Server) CommitRpc(args *CommitArgs, reply *CommitReply) error {
+	msg := args.Msg
+	zlog.Debug("CommitRpc, seq: %d, from: %d", msg.Seq, msg.PeerId)
+
+	// 这里先不验证，因为可能 req 消息还未收到，先存下投票信息后期验证
+	cert := s.getCertOrNew(msg.Seq)
+	cert.pushCommit(args)
+
+	// 尝试计票
+	go s.verifyBallot(cert)
+
+	reply.Ok = true
+	return nil
+}
+
+func (s *Server) verifyBallot(cert *LogCert) {
+	req, reqDigest, view := cert.get()
+
+	// req 为空则不进行后续阶段
+	if req == nil {
+		zlog.Debug("req is nil")
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	switch cert.getStage() {
+	case PrepareStage:
+		argsQ := cert.popAllPrepares()
+		for _, args := range argsQ {
+			msg := args.Msg
+			if cert.prepareVoted(msg.PeerId) { // 已投票
+				continue
+			}
+			if view != msg.View {
+				zlog.Warn("PrepareMsg error, view(%d) != msg.View(%d)", view, msg.View)
+				continue
+			}
+			if !SliceEqual(reqDigest, msg.Digest) {
+				zlog.Warn("PrePrepareMsg error, req.digest != msg.Digest")
+				continue
+			}
+			// 验证PrepareMsg
+			peer := s.peers[args.Msg.PeerId]
+			digest := Digest(msg)
+			ok := Verify(digest, args.Sign, peer.pubkey)
+			if !ok {
+				zlog.Warn("PrepareMsg verify error, seq: %d, from: %d", msg.Seq, msg.PeerId)
+				continue
+			}
+			cert.prepareVote(args)
+		}
+		zlog.Debug("verifyBallot, seq: %d, prepare: %d, commit: %d, stage: %d",
+			cert.seq, cert.prepareBallot(), cert.commitBallot(), cert.getStage())
+		// 2f + 1 (包括自身) 后进入 commit 阶段
+		if cert.prepareBallot() >= 2*s.f {
+			cert.setStage(CommitStage)
+			go s.Commit(cert.seq)
+		} else {
+			break
+		}
+		fallthrough // 进入后续判断
+	case CommitStage:
+		argsQ := cert.popAllCommits()
+		for _, args := range argsQ {
+			msg := args.Msg
+			if cert.commitVoted(msg.PeerId) { // 已投票
+				continue
+			}
+			if view != msg.View {
+				zlog.Warn("PrepareMsg error, view(%d) != msg.View(%d)", view, msg.View)
+				continue
+			}
+			if !SliceEqual(reqDigest, msg.Digest) {
+				zlog.Warn("PrePrepareMsg error, req.digest != msg.Digest")
+				continue
+			}
+			// 验证PrepareMsg
+			peer := s.peers[args.Msg.PeerId]
+			digest := Digest(msg)
+			ok := Verify(digest, args.Sign, peer.pubkey)
+			if !ok {
+				zlog.Warn("PrepareMsg verify error, seq: %d, from: %d", msg.Seq, msg.PeerId)
+				continue
+			}
+			cert.commitVote(args)
+		}
+		zlog.Debug("verifyBallot, seq: %d, prepare: %d, commit: %d, stage: %d",
+			cert.seq, cert.prepareBallot(), cert.commitBallot(), cert.getStage())
+		// 2f + 1 (包括自身) 后进入 apply和reply 阶段
+		if cert.commitBallot() >= 2*s.f {
+			cert.setStage(ReplyStage)
+			// if s.id == s.leader {
+			// 	zlog.Info("commit %d", cert.seq)
+			// 	s.commitSeqCh <- cert.seq
+			// }
+			go s.Apply(cert.seq)
+		}
+	}
+}
+
+// apply 日志，执行完后返回
+func (s *Server) Apply(seq int64) {
+	cert := s.getCertOrNew(seq)
+	cmd := cert.req.Req.Command
+	zlog.Info("execute cmd: [%s]", cmd)
+	result := s.zkv.Execute(cmd)
+	go s.Reply(seq, result)
+
+	time.Sleep(100 * time.Millisecond)
+	all := s.zkv.All()
+	fmt.Println("\n==== zkv ====")
+	fmt.Printf("%s", all)
+	fmt.Println("==== zkv ====")
+	fmt.Println()
+}
+
+func (s *Server) Reply(seq int64, result string) {
+	zlog.Debug("Reply %d", seq)
+	req, _, view := s.getCertOrNew(seq).get()
+	msg := &ReplyMsg{
+		View:       view,
+		Seq:        seq,
+		Timestamp:  time.Now().UnixNano(),
+		ClientAddr: req.Req.ClientAddr,
+		PeerId:     s.id,
+		Result:     result,
+	}
+	digest := Digest(msg)
+	sign := Sign(digest, s.prikey)
+
+	rpcCli, err := rpc.DialHTTP("tcp", req.Req.ClientAddr)
+	if err != nil {
+		zlog.Warn("dial client %s failed", req.Req.ClientAddr)
+		return
+	}
+
+	replyArgs := &ReplyArgs{
+		Msg:  msg,
+		Sign: sign,
+	}
+	reply := &ReplyReply{}
+
+	err = rpcCli.Call("Client.ReplyRpc", replyArgs, reply)
+	if err != nil {
+		zlog.Warn("rpcCli.Call(\"Client.ReplyRpc\") failed, %v", err)
+	}
+}
+
+func (s *Server) pbft() {
+	zlog.Info("== start work loop ==")
+	// 串行处理请求
+	for reqSeq := range s.seqCh {
+		s.PrePrepare(reqSeq)
+	}
 }
