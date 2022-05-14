@@ -308,39 +308,11 @@ func (s *Server) PrepareRpc(args *PrepareArgs, reply *PrepareReply) error {
 }
 
 func (s *Server) commit(seq int64) {
-	// 配置rpc参数,相比PrePrepare无需req
-	_, digest, view := s.getCertOrNew(seq).get()
-	msg := &CommitMsg{View: view, Seq: seq, Digest: digest, PeerId: s.id}
-	args := &CommitArgs{Msg: msg, Sign: Sign(Digest(msg), s.prikey)}
-
-	// commit广播
-	ids := []int32{}
-	for _, peer := range s.peers {
-		// 异步发送
-		p := peer
-		ids = append(ids, p.id)
-		go func() {
-			reply := &CommitReply{}
-			if err := p.rpcCli.Call("Server.CommitRpc", args, reply); err != nil {
-				zlog.Warn("Server.PrePrepareRpc %d error: %v", p.id, err)
-			}
-		}()
-	}
-	zlog.Info("I=%d L=%d seq=%d| stage=3:commit => %v", s.id, s.leader, seq, ids)
+	// TODO 请给出你的实现 (可参考prepare代码)
 }
 
 func (s *Server) CommitRpc(args *CommitArgs, reply *CommitReply) error {
-	msg := args.Msg
-	zlog.Info("I=%d L=%d seq=%d| stage=3:commit <= %d", s.id, s.leader, msg.Seq, msg.PeerId)
-
-	// 这里先不验证，因为可能 req 消息还未收到，先存下投票信息后期验证
-	cert := s.getCertOrNew(msg.Seq)
-	cert.pushCommit(args)
-
-	// 尝试计票
-	go s.verifyBallot(cert)
-
-	reply.Ok = true
+	// TODO 请给出你的实现 (可参考PrepareRpc代码)
 	return nil
 }
 
@@ -400,44 +372,7 @@ func (s *Server) verifyBallotPrepare(cert *LogCert) {
 }
 
 func (s *Server) verifyBallotCommit(cert *LogCert) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	argsQ := cert.popAllCommits()
-	for _, args := range argsQ {
-		msg := args.Msg
-		if cert.commitVoted(msg.PeerId) {
-			// 该peer重复投票，不计算
-			continue
-		}
-		// 验证view是否是当前view
-		if cert.view != msg.View {
-			zlog.Warn("PrepareMsg error, view(%d) != msg.View(%d)", cert.view, msg.View)
-			continue
-		}
-		// 验证摘要是否相同
-		if !SliceEqual(cert.digest, msg.Digest) {
-			zlog.Warn("PrePrepareMsg error, req.digest != msg.Digest")
-			continue
-		}
-		// 验证CommitMsg签名信息
-		peer := s.peers[args.Msg.PeerId]
-		digest := Digest(msg)
-		ok := Verify(digest, args.Sign, peer.pubkey)
-		if !ok {
-			zlog.Warn("PrepareMsg verify error, seq: %d, from: %d", msg.Seq, msg.PeerId)
-			continue
-		}
-		// 将该消息放入验证集中
-		cert.commitVote(args)
-	}
-	zlog.Debug("I=%d L=%d seq=%d| verify ballot, stage=%d prepare=%d commit=%d",
-		s.id, s.leader, cert.seq, cert.getStage(), cert.prepareBallot(), cert.commitBallot())
-	// 2f + 1 (包括自身) 后进入 apply 阶段
-	if cert.getStage() == CommitStage && cert.commitBallot() >= 2*s.f {
-		cert.setStage(ReplyStage)
-		go s.apply(cert.seq)
-		return
-	}
+	// TODO 请给出你的实现 (可参考verifyBallotPrepare代码)
 }
 
 // apply 日志，执行完后返回
