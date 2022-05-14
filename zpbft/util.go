@@ -1,12 +1,25 @@
 package zpbft
 
 import (
+	"io/ioutil"
 	"math"
 	"net"
 	"strings"
 	"time"
 	"zpbft/zlog"
 )
+
+func ReadKeyPair(pri, pub string) ([]byte, []byte) {
+	prikey, err := ioutil.ReadFile(pri)
+	if err != nil {
+		zlog.Error("ioutil.ReadFile(pri) filed, err:%v", err)
+	}
+	pubkey, err := ioutil.ReadFile(pub)
+	if err != nil {
+		zlog.Error("ioutil.ReadFile(pub) filed, err:%v", err)
+	}
+	return prikey, pubkey
+}
 
 func SliceEqual(a, b []byte) bool {
 	if len(a) != len(b) {

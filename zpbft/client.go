@@ -41,7 +41,7 @@ func RunClient(maddr, caddr string) {
 	}
 
 	// 开启rpc服务
-	c.server()
+	c.rpcListen()
 
 	// 从 master 那里获取peers信息
 	c.getPeersFromMaster()
@@ -53,13 +53,12 @@ func RunClient(maddr, caddr string) {
 	c.start()
 }
 
-func (c *Client) server() {
+func (c *Client) rpcListen() {
 	// 放入协程防止阻塞后面函数
 	go func() {
 		rpc.Register(c)
 		rpc.HandleHTTP()
-		err := http.ListenAndServe(c.addr, nil)
-		if err != nil {
+		if err := http.ListenAndServe(c.addr, nil); err != nil {
 			zlog.Error("http.ListenAndServe failed, err:%v", err)
 		}
 	}()
@@ -127,15 +126,19 @@ func (c *Client) start() {
 	for {
 
 		// 构造请求，发送给 leader，通过共识获得结果
-
 		fmt.Print(">>> ")
+		// 读取一行输入
 		fmt.Scan()
 		cmd, err := bufio.NewReader(os.Stdin).ReadString('\n')
 		if err != nil {
 			zlog.Warn("read input error")
 			continue
 		}
+		// 去掉最后面的换行符
 		cmd = cmd[:len(cmd)-1]
+
+		start := time.Now()
+		// 构建请求参数
 		args := &RequestArgs{
 			Req: &RequestMsg{
 				ClientAddr: c.addr,
@@ -145,14 +148,14 @@ func (c *Client) start() {
 		}
 		reply := &RequestReply{}
 
-		zlog.Info("send cmd:[%s] to leader %d", cmd, c.leader)
-		start := time.Now()
-		err = c.peers[c.leader].rpcCli.Call("Server.RequestRpc", args, reply)
-		if err != nil {
+		// rpc，失败则重试
+		if err := c.peers[c.leader].rpcCli.Call("Server.RequestRpc", args, reply); err != nil {
 			zlog.Warn("Call(\"Server.RequestRpc\", args, reply) failed, %v", err)
 			continue
 		}
+		zlog.Info("L=%d seq= %d| 0:request => %d | cmd: [%s]", c.leader, reply.Seq, c.leader, cmd)
 
+		// 匿名函数封装，可以RAII处理锁的获取与释放
 		func() {
 			c.mu.Lock()
 			defer c.mu.Unlock()
@@ -161,69 +164,66 @@ func (c *Client) start() {
 			cert.start = start
 		}()
 
+		// 客户端接受f+1个相同回复则将seq放入该通道，从这里获取
 		seq := <-c.applySeq
 		if seq != reply.Seq {
 			zlog.Warn("seq != reply.Seq")
 			continue
 		}
 
+		// 输出f+1个server返回的相同结果并打印
 		time.Sleep(100 * time.Millisecond)
 		func() {
 			c.mu.Lock()
 			defer c.mu.Unlock()
 			cert := c.getCertOrNew(seq)
-			fmt.Println("\n==== zkv ====")
+			fmt.Println("\n==== result ====")
 			fmt.Printf("%s\n", cert.result)
-			fmt.Println("==== zkv ====")
+			fmt.Println("================")
 			fmt.Println()
 		}()
 	}
 }
 
+// rpc:接受server的回复
 func (c *Client) ReplyRpc(args *ReplyArgs, reply *ReplyReply) error {
 	reply.Ok = false
 	msg := args.Msg
-	zlog.Debug("ReplyRpc, seq: %d, from: %d", msg.Seq, msg.PeerId)
 
 	if msg.ClientAddr != c.addr {
 		zlog.Warn("msg.ClientAddr != c.addr")
 		return nil
 	}
 
-	zlog.Info("p1")
-	//  验证
+	//  验证签名
 	peer := c.peers[args.Msg.PeerId]
-	digest := Digest(msg)
-	ok := Verify(digest, args.Sign, peer.pubkey)
-	if !ok {
+	if !Verify(Digest(msg), args.Sign, peer.pubkey) {
 		zlog.Warn("ReplyMsg verify error, seq: %d, from: %d", msg.Seq, msg.PeerId)
 		return nil
 	}
 
-	zlog.Info("p2")
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	cert := c.getCertOrNew(msg.Seq)
-	// TODO：存在bug
-	if SliceEqual(digest, cert.digest) {
-		zlog.Warn("digest != cert.digest")
-		return nil
-	}
-	if _, ok = cert.replys[msg.PeerId]; ok {
+	// 存入server的签名，已有则无需存入
+	if _, ok := cert.replys[msg.PeerId]; ok {
 		return nil
 	}
 	cert.replys[msg.PeerId] = args.Sign
+
+	// 如果暂无result，则存入result
 	if cert.result == "" {
 		cert.result = args.Msg.Result
 	}
-	replyCount := len(cert.replys)
 
-	zlog.Info("seq=%d replyCount=%d", cert.seq, replyCount)
-	// f+1个消息可确认请求通过了共识
+	// f+1个消息可确认请求通过了共识,可以输出结果
+	replyCount := len(cert.replys)
+	zlog.Info("L=%d seq= %d| 4:reply <= %d | reply.count=%d", c.leader, cert.seq, args.Msg.PeerId, replyCount)
 	if replyCount == c.f+1 {
-		c.applySeq <- cert.seq
-		return nil
+		go func() { // 防止阻塞
+			c.applySeq <- cert.seq
+		}()
 	}
 
 	reply.Ok = true

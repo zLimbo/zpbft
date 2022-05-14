@@ -62,7 +62,7 @@ func (m *Master) RegisterRpc(args *RegisterArgs, reply *RegisterReply) error {
 		m.addrs = append(m.addrs, args.Addr)
 		m.pubkeys = append(m.pubkeys, args.Pubkey)
 		if len(m.addrs) == m.peerNum {
-			zlog.Info("All nodes registered successfully")
+			zlog.Info("All nodes registered successfully, leader.addr=%s", m.addrs[0])
 		}
 		return true
 	}()

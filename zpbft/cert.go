@@ -5,14 +5,12 @@ import (
 	"sync/atomic"
 )
 
-type Log struct {
-	Op []byte
-}
-
 type Stage = int32
 
 const (
-	PrepareStage = iota
+	RequestStage = iota
+	PrePrepareStage
+	PrepareStage
 	CommitStage
 	ReplyStage
 )
