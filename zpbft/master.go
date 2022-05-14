@@ -88,7 +88,6 @@ func (m *Master) RegisterRpc(args *RegisterArgs, reply *RegisterReply) error {
 }
 
 type GetPeersArgs struct {
-	// empty
 	Addr string
 }
 

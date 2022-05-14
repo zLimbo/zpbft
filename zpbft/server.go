@@ -88,10 +88,7 @@ func (s *Server) register() {
 		zlog.Error("rpc.DialHTTP failed, err:%v", err)
 	}
 
-	args := &RegisterArgs{
-		Addr:   s.addr,
-		Pubkey: s.pubkey,
-	}
+	args := &RegisterArgs{Addr: s.addr, Pubkey: s.pubkey}
 	reply := &RegisterReply{}
 
 	zlog.Info("register peer info ...")
@@ -183,11 +180,11 @@ func (s *Server) RequestRpc(args *RequestArgs, reply *RequestReply) error {
 
 	// 客户端的请求暂不验证
 	// leader 分配seq
-	// leader 放入请求队列直接返回，后续异步通知客户端
-	// 使用协程：因为通道会阻塞
 	seq := s.assignSeq()
 	s.getCertOrNew(seq).set(args, Digest(args.Req), s.view)
 
+	// leader 放入请求队列直接返回，后续异步通知客户端
+	// 使用协程：因为通道会阻塞
 	go func() {
 		s.seqCh <- seq
 	}()
@@ -239,7 +236,7 @@ func (s *Server) prePrepare(seq int64) {
 
 func (s *Server) PrePrepareRpc(args *PrePrepareArgs, reply *PrePrepareReply) error {
 	msg := args.Msg
-	zlog.Info("I=%d L=%d seq= %d| stage=1:pre-prepare <= %d", s.id, s.leader, msg.Seq, msg.PeerId)
+	zlog.Info("I=%d L=%d seq=%d| stage=1:pre-prepare <= %d", s.id, s.leader, msg.Seq, msg.PeerId)
 	// 预设返回失败
 	reply.Ok = false
 
@@ -297,7 +294,7 @@ func (s *Server) prepare(seq int64) {
 
 func (s *Server) PrepareRpc(args *PrepareArgs, reply *PrepareReply) error {
 	msg := args.Msg
-	zlog.Info("I=%d L=%d seq= %d| stage=2:prepare <= %d", s.id, s.leader, msg.Seq, msg.PeerId)
+	zlog.Info("I=%d L=%d seq=%d| stage=2:prepare <= %d", s.id, s.leader, msg.Seq, msg.PeerId)
 
 	// 这里先不验证，因为可能 req 消息还未收到，先存下投票信息后期验证
 	cert := s.getCertOrNew(msg.Seq)
@@ -334,7 +331,7 @@ func (s *Server) commit(seq int64) {
 
 func (s *Server) CommitRpc(args *CommitArgs, reply *CommitReply) error {
 	msg := args.Msg
-	zlog.Info("I=%d L=%d seq= %d| stage=3:commit <= %d", s.id, s.leader, msg.Seq, msg.PeerId)
+	zlog.Info("I=%d L=%d seq=%d| stage=3:commit <= %d", s.id, s.leader, msg.Seq, msg.PeerId)
 
 	// 这里先不验证，因为可能 req 消息还未收到，先存下投票信息后期验证
 	cert := s.getCertOrNew(msg.Seq)
@@ -350,7 +347,7 @@ func (s *Server) CommitRpc(args *CommitArgs, reply *CommitReply) error {
 func (s *Server) verifyBallot(cert *LogCert) {
 	// req 为空则不进行后续阶段
 	if cert.req == nil {
-		zlog.Debug("I=%d L=%d seq= %d| verify ballot stop, req is nil", s.id, s.leader, cert.seq)
+		zlog.Debug("I=%d L=%d seq=%d| verify ballot stop, req is nil", s.id, s.leader, cert.seq)
 		return
 	}
 	if cert.getStage() == PrepareStage {
@@ -392,7 +389,7 @@ func (s *Server) verifyBallotPrepare(cert *LogCert) {
 		// 将该消息放入验证集中
 		cert.prepareVote(args)
 	}
-	zlog.Debug("I=%d L=%d seq= %d| verify ballot, stage=%d prepare=%d commit=%d",
+	zlog.Debug("I=%d L=%d seq=%d| verify ballot, stage=%d prepare=%d commit=%d",
 		s.id, s.leader, cert.seq, cert.getStage(), cert.prepareBallot(), cert.commitBallot())
 	// 2f + 1 (包括自身) 后进入 commit 阶段
 	if cert.getStage() == PrepareStage && cert.prepareBallot() >= 2*s.f {
@@ -433,7 +430,7 @@ func (s *Server) verifyBallotCommit(cert *LogCert) {
 		// 将该消息放入验证集中
 		cert.commitVote(args)
 	}
-	zlog.Debug("I=%d L=%d seq= %d| verify ballot, stage=%d prepare=%d commit=%d",
+	zlog.Debug("I=%d L=%d seq=%d| verify ballot, stage=%d prepare=%d commit=%d",
 		s.id, s.leader, cert.seq, cert.getStage(), cert.prepareBallot(), cert.commitBallot())
 	// 2f + 1 (包括自身) 后进入 apply 阶段
 	if cert.getStage() == CommitStage && cert.commitBallot() >= 2*s.f {
@@ -448,7 +445,7 @@ func (s *Server) apply(seq int64) {
 	cmd := s.getCertOrNew(seq).req.Req.Command
 	result := s.zkv.Execute(cmd)
 	go s.reply(seq, result)
-	zlog.Info("I=%d L=%d seq= %d| execute cmd:[%s], result:[%s]", s.id, s.leader, seq, cmd, result)
+	zlog.Info("I=%d L=%d seq=%d| execute cmd:[%s], result:[%s]", s.id, s.leader, seq, cmd, result)
 
 	// 打印 zkv 信息
 	time.Sleep(100 * time.Millisecond)
@@ -473,7 +470,7 @@ func (s *Server) reply(seq int64, result string) {
 	replyArgs := &ReplyArgs{Msg: msg, Sign: Sign(Digest(msg), s.prikey)}
 	reply := &ReplyReply{}
 
-	zlog.Info("I=%d L=%d seq= %d| stage=4:reply => %s", s.id, s.leader, seq, req.Req.ClientAddr)
+	zlog.Info("I=%d L=%d seq=%d| stage=4:reply => %s", s.id, s.leader, seq, req.Req.ClientAddr)
 	rpcCli, err := rpc.DialHTTP("tcp", req.Req.ClientAddr)
 	if err != nil {
 		zlog.Warn("dial client %s failed", req.Req.ClientAddr)

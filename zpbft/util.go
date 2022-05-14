@@ -66,10 +66,6 @@ func GetLocalIp() string {
 	}
 	localAddr := tcpConn.LocalAddr().(*net.UDPAddr)
 	ip := strings.Split(localAddr.String(), ":")[0]
-
-	if err != nil {
-		zlog.Error("err: %v", err)
-	}
 	return ip
 }
 

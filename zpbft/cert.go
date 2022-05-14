@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 )
 
+// pbft 三阶段状态
 type Stage = int32
 
 const (
@@ -15,17 +16,18 @@ const (
 	ReplyStage
 )
 
+// 某次共识的消息存证
 type LogCert struct {
 	mu         sync.Mutex
 	seq        int64
 	view       int32
+	stage      Stage
 	req        *RequestArgs
 	digest     []byte
 	id2prepare map[int32]*PrepareArgs
 	id2commit  map[int32]*CommitArgs
 	prepareWQ  []*PrepareArgs
 	commitWQ   []*CommitArgs
-	stage      Stage
 }
 
 func (lc *LogCert) set(req *RequestArgs, digest []byte, view int32) {

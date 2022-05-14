@@ -23,12 +23,10 @@ func Sign(msg []byte, prikey []byte) []byte {
 	if err != nil {
 		zlog.Error("x509.ParsePKCS1PrivateKey(block.Bytes), err: %v", err)
 	}
-
 	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hashed)
 	if err != nil {
 		zlog.Error("Error from signing: %v", err)
 	}
-
 	return signature
 }
 
@@ -43,10 +41,8 @@ func Verify(msg, signature, pubkey []byte) bool {
 		zlog.Warn("x509.ParsePKIXPublicKey(block.Bytes), err: %v", err)
 		return false
 	}
-
 	hashed := sha256.Sum256(msg)
-	err = rsa.VerifyPKCS1v15(pubKey.(*rsa.PublicKey), crypto.SHA256, hashed[:], signature)
-	if err != nil {
+	if err = rsa.VerifyPKCS1v15(pubKey.(*rsa.PublicKey), crypto.SHA256, hashed[:], signature); err != nil {
 		zlog.Warn("rsa.VerifyPKCS1v15(...), err: %v", err)
 		return false
 	}
@@ -54,12 +50,9 @@ func Verify(msg, signature, pubkey []byte) bool {
 }
 
 func Digest(msg interface{}) []byte {
-
 	msgBytes := JsonMarshal(msg)
-
 	sha256 := sha256.New()
 	sha256.Write(msgBytes)
-
 	return sha256.Sum(nil)
 }
 

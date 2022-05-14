@@ -23,10 +23,10 @@ func main() {
 
 	switch role {
 	case "master":
-		// 执行命令: ./naive -role master -maddr localhost:8000 -f 1
+		// 执行命令: ./naive -role master -maddr localhost:8000 [-f 1]
 		zpbft.RunMaster(maddr, f)
 	case "server":
-		// 执行命令: ./naive -role server -maddr localhost:8000 -saddr localhost:800x -pri ... -pub ...
+		// 执行命令: ./naive -role server -maddr localhost:8000 -pri ... -pub ... -saddr localhost:800x
 		zpbft.RunServer(maddr, saddr, pri, pub)
 	case "client":
 		// 执行命令: ./naive -role client -maddr localhost:8000 -caddr localhost:9000
