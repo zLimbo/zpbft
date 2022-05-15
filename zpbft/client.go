@@ -12,11 +12,11 @@ import (
 )
 
 type CmdCert struct {
-	seq    int64
-	digest []byte
-	start  time.Time
-	replys map[int32][]byte
-	result string
+	seq       int64
+	digest    []byte // 请求的摘要
+	timestamp int64  // 请求开始时间戳
+	replys    map[int32][]byte
+	result    string
 }
 
 type Client struct {
@@ -124,7 +124,6 @@ func (c *Client) start() {
 	time.Sleep(500 * time.Millisecond)
 	zlog.Info("client start ...")
 	for {
-
 		// 构造请求，发送给 leader，通过共识获得结果
 		fmt.Print(">>> ")
 		// 读取一行输入
@@ -161,7 +160,7 @@ func (c *Client) start() {
 			defer c.mu.Unlock()
 			cert := c.getCertOrNew(reply.Seq)
 			cert.digest = Digest(args.Req)
-			cert.start = start
+			cert.timestamp = start.UnixNano()
 		}()
 
 		// 客户端接受f+1个相同回复则将seq放入该通道，从这里获取
@@ -172,6 +171,7 @@ func (c *Client) start() {
 		}
 
 		// 输出f+1个server返回的相同结果并打印
+		take := time.Since(start)
 		time.Sleep(100 * time.Millisecond)
 		func() {
 			c.mu.Lock()
@@ -180,7 +180,7 @@ func (c *Client) start() {
 			fmt.Println("\n==== result ====")
 			fmt.Printf("%s\n", cert.result)
 			fmt.Println("================")
-			fmt.Println()
+			fmt.Printf("take: %v\n\n", take)
 		}()
 	}
 }
@@ -235,7 +235,6 @@ func (c *Client) getCertOrNew(seq int64) *CmdCert {
 	if !ok {
 		cert = &CmdCert{
 			seq:    seq,
-			start:  time.Now(),
 			replys: make(map[int32][]byte),
 		}
 		c.seq2cert[seq] = cert

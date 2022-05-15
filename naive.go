@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"zpbft/zlog"
 	"zpbft/zpbft"
 )
 
@@ -17,10 +18,14 @@ func main() {
 	flag.StringVar(&pri, "pri", "", "private key file")
 	flag.StringVar(&pub, "pub", "", "public key file")
 	flag.IntVar(&f, "f", 1, "fault tolerance num")
-	flag.IntVar(&logLevel, "log", 0, "log level(0:Debug,1:Info,2:Warn,3:Error)")
+	flag.IntVar(&logLevel, "log", 1, "log level(0:Debug,1:Info,2:Warn,3:Error)")
 
 	flag.Parse()
 
+	// 设置日志级别，默认为 Info(1)
+	zlog.SetLevel(logLevel)
+
+	// 根据不同身份启动节点
 	switch role {
 	case "master":
 		// 执行命令: ./naive -role master -maddr localhost:8000 [-f 1]

@@ -47,9 +47,9 @@ func (z *ZKV) Execute(cmd string) string {
 		key := words[1]
 		val, ok := z.Get(key)
 		if !ok {
-			return fmt.Sprintf("error: can't find this key <%s>\n", key)
+			return fmt.Sprintf("error: can't find this key '%s'", key)
 		}
-		return fmt.Sprintf("result: %s\n", val)
+		return fmt.Sprintf("result: %s", val)
 	case "put":
 		if len(words) != 3 {
 			return usage
